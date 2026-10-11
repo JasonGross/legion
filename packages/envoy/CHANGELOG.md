@@ -191,6 +191,19 @@
 
 ### Changed
 
+- `GET /api/v1/references` no longer renders every document that mentions its target to cut each
+  backlink's one-block excerpt (LEGION-531; 24.6% of a week's production CPU). Each document
+  mention's excerpt - the block holding the target's first mention, its `#b-<id>` jump and its
+  markdown cut to 480 characters - is stored on its `refs` row when the mention is indexed, cut
+  from the render the version write already makes, so the route reads one indexed query and loads
+  no document. Migration `0092_refs_excerpts` adds the three nullable columns (`excerpt_block_id`,
+  `excerpt_text`, `excerpt_version`) and the partial index `refs_excerpt_drift`; its census answers
+  `0`. `envoy-dispatch` runs a reconciliation that fills every row indexed before it, one batch of
+  20 documents per tick. Until it reaches a row, the route answers that mention with the
+  document's name, the fallback a mention in no block already got. The excerpts the dashboard
+  shows are unchanged: on the 2026-10-10 production dump, all 7,537 document mentions match the
+  rendered path. In the rolling deploy that ships 0092, a version the outgoing task writes keeps
+  the previous version's excerpt until the reconciliation's next tick, within five minutes.
 - **Breaking:** an agent session on a machine its person logged in is one enrollment kind,
   `session`, where the broker recorded `host` for a session the helper enrolled for itself and `box`
   for a key a launcher such as agentbox brought; a pod stays `pod`. Migration

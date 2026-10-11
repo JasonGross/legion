@@ -1224,7 +1224,39 @@ relation: `mentions`, `child_of` (`issues.parent_key`), `attached_to` (`artifact
 `ref_key`, artifact sources by uuid; each arm has the index its `to`/`from` predicate needs.
 `GET /api/v1/references?to=|from=` reads the view; `envoy-dispatch rebuild-refs` reparses every
 source and reconciles the index (the text is the truth), deleting edges whose source no longer
-exists, and refuses to run without `dispatch.server_url`.
+exists, and refuses to run without `dispatch.server_url`. A document mention's backlink excerpt -
+the block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to
+480 characters - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`,
+`excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's
+tree that the write already makes: every renderer of a version's tree takes the block offsets from
+its own render (`pmdoc.RenderWithBlockOffsets`; `renderTreeWithOffsets`,
+`documentMarkdownWithOffsets`), and a `docs.renderedTree` carries the tree, the markdown and the
+offsets together to `refs.MentionExcerpts` and `refs.RecordExcerpts` (`writeVersionTx`, and an
+upload's and a seeded spec's `docs.Service.IndexDocumentReferences`, which take the transaction's
+recorded rendering from the ledger), so the route reads no document and no write renders its tree
+for the excerpts (LEGION-531). An edit, a named version, a seed, a rebuild and a settlement render
+the tree once; an upload that changes the document renders it twice, as it did before excerpts -
+`ReplaceText`'s render of the replacement, which is the stored markdown, and `applyLive`'s render
+of the fork - and its excerpts are cut from `applyLive`'s render only when the two agree. A null
+`excerpt_version` marks a mention owed an excerpt: every row 0092 found, each one `rebuild-refs`
+inserts, and every mention of an upload whose replacement left the document as it was, the one
+version write that records no rendering (`refs.ClearExcerpts`, which keeps the payload the row
+holds for the reconciliation but sets its version null). `cmd/dispatch` runs
+`docs.Service.RunReferenceExcerptReconciliation`, which reads owed rows through the partial index
+`refs_excerpt_drift` (an empty index once it has caught up), stores one batch of 20 documents per
+tick, every 2 s while a batch is full and every five minutes after, and for the hour after its
+start first marks owed the excerpts a version written by the binary a deploy replaces left
+behind (`refs.MarkStaleExcerpts`). A document the reconciliation cannot read for any reason but
+an unloadable history or a tree outside the schema (which it records as having no block), or whose
+excerpts it cannot store, is logged at ERROR and skipped for that tick, its mentions left owed, so
+one document never holds back the rest of its batch. `refs.StoredExcerpts` serves only a row whose
+`excerpt_version` is non-null; a row owed an excerpt is answered with the document's name, not the
+payload it still holds. One window is left: during the one rolling deploy that ships 0092, a
+version the binary it replaces writes leaves the previous version's excerpt with its
+`excerpt_version` still set, and the route serves that excerpt until `refs.MarkStaleExcerpts`
+marks it owed at the reconciliation's next tick, which starts within five minutes
+(`docs.ReferenceExcerptReconcileInterval`) of the last one ending. The deploy's overlap lies inside
+the hour after the new task starts, the only hour `MarkStaleExcerpts` runs.
 A mention's source is the node whose text holds it, never the issue that text belongs to: a
 citation in an issue's spec is an edge out of the spec document, so
 `GET /api/v1/references?from=dispatch://KEY/spec` lists it, `?from=dispatch://KEY` lists only the
