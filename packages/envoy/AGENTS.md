@@ -2359,19 +2359,41 @@ or NOT_ENROLLED; exit 1 otherwise, with a notice when a helper is expected but c
 for callers that choose between the broker and another backend. A helper holding no launcher
 credential, from every restart until the operator logs the machine in, enrolls no one: its sign
 and sign-request answer NO_CREDENTIAL, so `identity` exits 1 and every other command fails, each
-with the same not-logged-in notice naming `agent-secrets machine login`. The login that installs
-a credential wakes every registered session's enrollment retry, so those sessions reach the broker
-within about a second of it rather than when a backoff of up to a minute comes round. A session
-whose renew the broker refuses (its lease lapsed) stops counting as enrolled at once, and its
-enrollment becomes the session's lapsed id; so does a re-pinned session's recorded enrollment
-after a helper restart. While it is lapsed and the helper holds a credential, sign answers
-NOT_ENROLLED naming the refused renew, and `register --wait N` waits for its re-enrollment. The
-helper revokes a lapsed id before the session enrolls again, and while the session lives its
-record keeps that id until the revoke lands, so a restart meanwhile, even a second one before any
-login, still revokes it. A session that ends first takes its record with it and hands the id to a
-bounded revoke (three tries); before a login those fail, and the broker's sweeper ends the id once
-its lease lapses. A revoke refused 403 `OPERATOR_MISMATCH` (an enrollment made under another
-operator's launcher credential) counts as done, and the session enrolls afresh.
+with the same not-logged-in notice naming `agent-secrets machine login`.
+
+`agent-secrets renew --pod-token-file FILE` is the pod renewer: it re-reads and trims the
+projected token before every broker request, and sends it as `pod_token`. A blank or unreadable
+file makes no request: the renewer prints `ERROR: enrollment <id> cannot read its pod token
+(<reason>); nothing was sent, so its lease lapses unless the file becomes readable`, the only
+record naming the lapsing enrollment since the broker hears nothing, and retries rather than
+exiting 76 - at start it exits 2 and the shim starts it again, and after a renewal it waits and
+reads again. The worker shim passes its projected token file and writes the renewer's stderr to
+its own.
+The client works against a broker that predates the renewal body because that handler reads no
+body. The terminal renewal refusals are one set in `cmd/agent-secrets` (`terminalRenewal`):
+`POD_TOKEN_REQUIRED`, `ENROLLMENT_NOT_LIVE`, and an older broker's `PROOF_INVALID` whose message
+says `not live` (its word for an ended enrollment). Only those exit 76 (`EX_PROTOCOL`) with the
+enrollment id, HTTP status and broker code; the shim quotes that terminal line beside its own
+enrollment id and stops rather than restarting a renewer that cannot succeed. Every other refusal
+keeps the retry backoff: `POD_IDENTITY_MISMATCH`, because the broker also answers it for a token
+it could not verify while its issuer or key set was unreachable (a real mismatch ends with the
+lease, and the next renewal is `ENROLLMENT_NOT_LIVE`); `POD_TOKEN_EXPIRED`, retried with the token
+the file holds next; and any other `PROOF_INVALID`, since a clock or URL correction can make the
+next proof valid.
+
+The login that installs a credential wakes every registered session's enrollment retry, so those
+sessions reach the broker within about a second of it rather than when a backoff of up to a minute
+comes round. A session whose renew the broker refuses (its lease lapsed) stops counting as enrolled
+at once, and its enrollment becomes the session's lapsed id; so does a re-pinned session's recorded
+enrollment after a helper restart. While it is lapsed and the helper holds a credential, sign
+answers NOT_ENROLLED naming the refused renew, and `register --wait N` waits for its
+re-enrollment. The helper revokes a lapsed id before the session enrolls again, and while the
+session lives its record keeps that id until the revoke lands, so a restart meanwhile, even a
+second one before any login, still revokes it. A session that ends
+first takes its record with it and hands the id to a bounded revoke (three tries); before a login
+those fail, and the broker's sweeper ends the id once its lease lapses. A revoke refused 403
+`OPERATOR_MISMATCH` (an enrollment made under another operator's launcher credential) counts as
+done, and the session enrolls afresh.
 `agent-secrets machine login-status`, which the helper answers, exits 0 while the helper holds a
 launcher credential and prints `issued`. A
 re-login that is denied, expires unapproved or is still pending leaves the credential an earlier

@@ -191,6 +191,17 @@
 
 ### Changed
 
+- `agent-secrets renew --pod-token-file FILE` re-reads the projected pod token before each renewal
+  and sends the token as `pod_token`. A blank or unreadable file posts no renewal: the renewer
+  prints `ERROR: enrollment <id> cannot read its pod token (<reason>); nothing was sent, so its
+  lease lapses unless the file becomes readable` and retries rather than exiting 76 (at start it
+  exits 2 and the shim starts it again). The worker shim passes its projected token file. This
+  client works against a broker that predates the renewal body because that handler ignores it.
+  The terminal renewal refusals `POD_TOKEN_REQUIRED` and `ENROLLMENT_NOT_LIVE`, and an older
+  broker's `PROOF_INVALID` saying `not live`, exit 76 (`EX_PROTOCOL`) naming the enrollment, HTTP
+  status and broker code; the shim quotes that terminal line beside its own enrollment and stops.
+  Every other refusal retries, `POD_IDENTITY_MISMATCH` among them, which the broker also answers
+  for a token it could not verify while its issuer was unreachable.
 - `GET /api/v1/references` no longer renders every document that mentions its target to cut each
   backlink's one-block excerpt (LEGION-531; 24.6% of a week's production CPU). Each document
   mention's excerpt - the block holding the target's first mention, its `#b-<id>` jump and its
