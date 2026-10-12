@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -160,6 +161,15 @@ func TestAnInvalidProjectIsRefusedForABearerAndAPerson(t *testing.T) {
 		{"Braille pattern blanks", "AGENT", "\u2800\u2800", "name has no visible character"},
 		{"a bare combining mark and a variation selector", "AGENT", "\u0301\ufe0f", "name has no visible character"},
 		{"a spacing combining mark alone", "AGENT", "\u093e", "name has no visible character"},
+		// Characters that stay invisible however new the reader's Unicode is: a reserved
+		// default-ignorable (U+2065, U+FFF0, U+E0000-U+E0FFF) renders as nothing, and a
+		// noncharacter is never assigned. U+E0080 is unassigned; the language tag U+E0001 beside
+		// it is an assigned format character.
+		{"a reserved default-ignorable in the general punctuation block", "AGENT", "\u2065", "name has no visible character"},
+		{"a reserved default-ignorable before the specials", "AGENT", "\ufff0", "name has no visible character"},
+		{"a reserved default-ignorable in the tag block", "AGENT", "\U000E0080", "name has no visible character"},
+		{"a language tag", "AGENT", "\U000E0001", "name has no visible character"},
+		{"a noncharacter", "AGENT", "\ufdd0", "name has no visible character"},
 	} {
 		t.Run(input.name, func(t *testing.T) {
 			for _, attempt := range []struct {
@@ -197,6 +207,15 @@ func TestAVisibleNameWithFormatCharactersIsAcceptedForABearerAndAPerson(t *testi
 		"한국 팀",
 		"cafe\u0301",
 		"Cafe\u0301",
+		// Scripts whose names lean on combining marks and conjoining letters: Devanagari, Thai
+		// with a tone mark, and a Hangul syllable written as its conjoining jamo.
+		"नमस्ते",
+		"น้ำ",
+		"\u1112\u1161\u11ab",
+		// A character newer than the Unicode tables Go ships (U+1FAE9, Unicode 16, sent by phones
+		// now): a reader's device draws it, so it is not "no visible character".
+		"🫩",
+		"Team 🫩",
 	} {
 		bearer := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
 			"key": fmt.Sprintf("VISB%d", index), "name": name, "actor": sessionActor(),
@@ -210,6 +229,38 @@ func TestAVisibleNameWithFormatCharactersIsAcceptedForABearerAndAPerson(t *testi
 		if person.Code != http.StatusCreated {
 			t.Errorf("a person creating name %q: status=%d body=%s, want 201", name, person.Code, person.Body.String())
 		}
+	}
+}
+
+// The 🫩 row above tests the unassigned-code-point rule only while Go's tables predate Unicode 16;
+// Go 1.27's assign U+1FAE9 as a symbol. This test finds, in the running Go's own tables, a code
+// point of plane 3 (outside the noncharacter and default-ignorable ranges) they leave unassigned,
+// so it keeps testing that rule on whatever toolchain runs it, and fails if none is left to find.
+func TestACodePointGoLeavesUnassignedIsVisibleForABearerAndAPerson(t *testing.T) {
+	unassigned := rune(-1)
+	for candidate := rune(0x30000); candidate <= 0x3FFFD; candidate++ {
+		if unicode.Is(unicode.Cn, candidate) {
+			unassigned = candidate
+			break
+		}
+	}
+	if unassigned < 0 {
+		t.Fatal("Go's Unicode tables assign every code point in U+30000-U+3FFFD; pick another unassigned range for this test")
+	}
+	if !visibleCharacter(unassigned) {
+		t.Fatalf("visibleCharacter(U+%04X) = false for a code point Go's Unicode %s tables leave unassigned", unassigned, unicode.Version)
+	}
+	handler := newTestHandler(t)
+	name := string(unassigned)
+	if bearer := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "UNASB", "name": name, "actor": sessionActor(),
+	}); bearer.Code != http.StatusCreated {
+		t.Errorf("a bearer creating name U+%04X: status=%d body=%s, want 201", unassigned, bearer.Code, bearer.Body.String())
+	}
+	if person := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "UNASP", "name": name,
+	}, "alice"); person.Code != http.StatusCreated {
+		t.Errorf("a person creating name U+%04X: status=%d body=%s, want 201", unassigned, person.Code, person.Body.String())
 	}
 }
 
