@@ -1478,7 +1478,19 @@ architect, planner, implementer, tester, reviewer, merger), named for its role:
    the volume was lost, and the XDG base directories (`initEnvironment`, `manifest.go`); nothing
    names a role, a generation, a lock wait or another issue's workspace. The workspace starts at the
    issue's branch, `legion/<KEY>`, which the daemon created on GitHub at `main` before the issue's
-   architect or planner started.
+   architect or planner started. Before any git or jj runs it removes every git lock file
+   (`<file>.lock`) in the clone's git directory and in the issue's own worktree entry of it, and
+   logs each with its path and age (`RemoveStaleGitLocks`, `internal/workspace/stalelock.go`): a
+   git or jj interrupted mid-write leaves its lock, and every later write of that file fails on it,
+   but no process can hold one now, since no role container of the pod has started and no other pod
+   mounts the volume. Another worktree entry of the clone keeps its locks; a lock it cannot remove,
+   and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it
+   would take the removal outside the clone), fail the container naming the path. jj's own locks
+   are `flock(2)` locks, which end with their holder, so it leaves them. Under a running pod nothing
+   removes a lock, since another role's git, which a role's container cannot see, may hold it: the
+   `jj` the shim's working-copy adoption and a `handoff_complete` run name each lock still on disk
+   that they failed on, with its age, in their error, say not to remove it while the pod runs, and
+   that replacing the issue's pod removes it.
 3. Each role container runs `legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --token-file … --sandbox <name> --role <role> --private-dir …`: PID 1
    of that role, starting and stopping the role's `legion worker-shim` (Oh My Pi) child on the
@@ -1565,12 +1577,11 @@ Each role's shim is started with `--warm-codegraph`: once its Oh My Pi has writt
 its extensions loaded, its RPC loop serving — the shim builds the workspace's CodeGraph index in the
 background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial, as
 `codegraph status --json` decides). Nothing waits on it: not the launch, not the role's registration,
-not a prompt. Six role shims share one workspace, and a draining pod can overlap its replacement, so
-the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run — an exclusive create whose
-holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a
-second exclusive create beside it so two shims that both read one stale lease never both build — and a
-shim that finds the lease held leaves the build to its holder (a pod's `flock` reaches no other pod
-under gVisor, so the lease is a file, not a lock). A stop mid-build — the launcher's one SIGTERM to
+not a prompt. Six role shims share one workspace, so the warm-up holds a lease at
+`.codegraph/legion-warm.lock` for its run — an exclusive create whose holder refreshes its mtime
+every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create
+beside it so two shims that both read one stale lease never both build — and a shim that finds the
+lease held leaves the build to its holder. A stop mid-build — the launcher's one SIGTERM to
 the role's process group — ends Oh My Pi and the `codegraph` child together, and the shim exits only
 once the warm-up has released its lease, inside the pod's `terminationGracePeriodSeconds`
 (`worker_stop_timeout_seconds`, which the launcher passes the shim as `--stop-grace`), so the
@@ -1732,12 +1743,46 @@ does (`xargs -0 sh -c 'exec env -i "$@" omp …' agent-env </proc/<pid>/environ`
 `internal/workspace/provision.go`); no other issue's workspace is on this volume.
 
 **No pod of the issue is running**, as when the only pod is the one whose `workspace-init`
-refuses: mount the issue's claim in a pod of your own, `issue-<Sandbox>`, i.e.
+refuses. That pod is still there: the kubelet retries its `workspace-init` (`restartPolicy:
+Always`) and the daemon's next launch replaces it, and every attempt removes the git locks in the
+issue's clone, one a git of yours holds included. So make it go first, and keep the issue from
+launching again while you work:
+
+1. Suspend every claim of the issue that is in `registered`, `ready`, `idle`, `working`,
+   `launching`, `shim_connected`, or `suspended` with a `suspendedBy` other than `operator` (`legion
+   claims list --json --operator-token-file <file>`): `legion claims suspend --claim <token>
+   --operator-token-file <file>` on each. An operator's suspend takes over one the daemon recorded,
+   so the workflow resumes it no more until you do. A `working` claim stops at its turn's end (the
+   command waits `--wait`, a minute by default), and a `launching` or `shim_connected` one once its
+   agent is ready. For a child issue, suspend its tree's architect too: it runs in the root's pod,
+   and its retry of a held phase relaunches the child's failed worker.
+2. Once each suspend has printed its claim `suspended` (run one that exits 1 again, with a longer
+   `--wait`: it exits 1 when the wait runs out with the suspension still held for the agent's turn,
+   and the patch below would cut that turn off mid-write, leaving a stale lock of its own), set the
+   Sandbox `Suspended` from the operator's context. `legion claims suspend` stops a role's process
+   but leaves the pod, and its Sandbox `Running` (`Suspend`, `internal/runtime/sandbox/sandbox.go`).
+3. Run git or jj writes only once the issue lists no pod. A claim the suspend does not act on —
+   `queued`, `launch_uncertain`, `failed`, `retired` — the workflow can still start: a start row
+   spawns a queued claim and retries a failed or retired one (`internal/daemon/outbox.go`), which
+   sets the Sandbox `Running` again. So list the pods again right before each write.
+
+```sh
+kubectl -n legion patch sandbox legion-<project>-<issue key lowercased> --type merge -p '{"spec":{"operatingMode":"Suspended"}}'
+kubectl -n legion get pods -l legion.dev/issue=<KEY>
+```
+
+Then mount the issue's claim in a pod of your own, `issue-<Sandbox>`, i.e.
 `issue-legion-<project>-<issue key lowercased>` (`kubectl -n legion get pvc -l legion.dev/issue=<KEY>`).
 The claim is `ReadWriteOnce`, and the pod carries no affinity, so it lands wherever the pool has
-room and the volume follows it. Delete it before the issue's next pod starts, because that pod
-cannot attach the volume while this one holds it (on another node it waits on the detach, with
-`FailedAttachVolume` or `Multi-Attach` events, until this one is gone):
+room and the volume follows it. The issue's next launch (the operator's `resume` or `retry`, or the
+workflow's start of one of its roles, such as its tree's architect retrying a held phase) sets its
+Sandbox `Running` again (`relaunch`, `relaunch.go`); delete your pod before it, and for a child
+issue suspend the tree's architect first. Once you are done and your pod is deleted, resume each
+claim you suspended (`legion claims resume --claim <token> --operator-token-file <file>`).
+`ReadWriteOnce` binds the volume to one node, not one pod: on another node the new pod waits on the
+detach, with `FailedAttachVolume` or `Multi-Attach` events, until yours is gone, but on the same
+node it mounts the volume beside yours, and its `workspace-init` removes the clone's git locks, one
+a git still running in yours holds included:
 
 ```yaml
 apiVersion: v1
@@ -2100,10 +2145,11 @@ coordinator's pods (`packages/daemon`) keep to that with two init containers:
 - **`workspace-init`** mounts the issue's volume, the feed read-only, and the config home — never
   the Secret — and runs `legion workspace-init provision`: the clone's clone and fetch reach
   `https://github.com/<owner>/<repo>`, the remote its origin names, at the feed over git's file
-  transport, then the workspace add, `update-stale`, and the configuration writes. It takes no lock
-  and waits on no other pod: the clone is the issue's own, on the issue's own volume, and no other
-  provision shares the repository. What an agent of the issue planted can run there, with nothing
-  to take that the agent does not already hold.
+  transport, then the workspace add, `update-stale`, and the configuration writes, once it has
+  removed the clone's stale git locks ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+  It takes no lock and waits on no other pod: the clone is the issue's own, on the issue's own
+  volume, and no other provision shares the repository. What an agent of the issue planted can run
+  there, with nothing to take that the agent does not already hold.
 
 `packages/daemon/internal/runtime/sandbox/boundary_test.go` runs both containers exactly as the
 manifest states them against nine such plants, with every one of provisioning's git and jj pins made
