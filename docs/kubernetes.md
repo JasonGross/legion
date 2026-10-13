@@ -693,7 +693,14 @@ listing them from the API by the tree's label, in any order (`CleanupTree`,
 `internal/runtime/sandbox/cleanup.go`): each delete carries the listed object's UID and
 resourceVersion plus `foreground` propagation and is awaited until the API no longer has it, the
 listing is read again until it holds none, and a delete the API refuses because the Sandbox changed
-since the listing lists again after a short wait. Agent Sandbox v1.0.3 creates each Sandbox's PVC
+since the listing lists again after a short wait. A Sandbox whose home is another tree
+(`Store.IssueSandboxHome`: a child whose hand-over is pending, or one carried into a tree of its own
+that it is in or can still be admitted into) is handed over instead of deleted: under the pod's
+launch turn, one patch fenced to the listed uid and resourceVersion relabels it for the issue's tree
+and suspends it, keeping its volume and the sessions on it (`handOverSandbox`), so the new tree's
+first launch finds it its own whenever that launch comes. A patch the API refuses because the
+Sandbox changed since the listing (its failed `test` operation, answered 409 or 422) lists again
+too. Agent Sandbox v1.0.3 creates each Sandbox's PVC
 with that Sandbox as its controller owner and `blockOwnerDeletion: true`; foreground deletion keeps
 the owner visible until Kubernetes garbage collection deletes that blocking dependent. The restricted
 daemon has no PVC API verb, so a Sandbox's absence after its foreground delete is the API's
@@ -704,23 +711,61 @@ that result from labels or a generic garbage-collection rule.
 An operator-created tree has no workflow record: its stored operator authority, not a zero or
 sentinel generation, selects the operator cleanup entry point, which then applies the same
 cleanup without manufacturing a workflow issue. A tree closed before any of
-its Sandboxes was created lists none and confirms its reservation without deleting anything.
+its Sandboxes was created lists none and confirms its reservation without deleting anything. A root
+that left admission's waiting line before a slot opened its tree (labelled `todo`, then set to
+`backlog`, `icebox` or `done`) lingers as any root does, but its tree never had a lifecycle and
+holds nothing a cleanup releases, so its linger's close rows reserve nothing and finish.
 
 A child of a closed tree re-admitted as a root of its own keeps its key, so its claims and its
 Sandbox's name. Its old tree's cleanup does not wait on a claim of it that runs nothing; each of
 its claims is re-pointed to its new tree before its first start there, and binds that tree's epoch;
-and its root launch keeps the Sandbox its old tree suspended, which owns the volume holding the
+and its root launch keeps the Sandbox its old tree left, which owns the volume holding the
 issue's clone, workspace and its roles' sessions: the Sandbox is relabelled for the new tree
-(`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`) and the sessions resume. A Sandbox of the
-old tree that still runs roles is not relabelled: the launch is refused until they stop. That holds
-while the old tree lingers; once its cleanup has run (`CleanupTree`, after the linger), the Sandbox
-and the volume are gone, and the re-pointed claim still names its session (`Retree`,
+(`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`) and the sessions resume. A role still in a
+turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new
+generation finishes the close's own suspend row without acting. So no start of the new tree launches
+anything while a claim of the issue still runs a process in another tree: the start suspends that
+claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until
+the claim has stopped (`stopElsewhere`, `internal/daemon/outbox.go`). No close of the old tree
+reaches that claim, so its stop is bounded where that close would have ended the turn, at the old
+root's linger expiry (`linger_hours`): a turn that ends within the linger ends on its own, and one
+still running at the expiry is stopped there. Once the old root no longer lingers (it was reopened,
+say), there is no close left to wait for, and the stop falls back to the stop timeout
+(`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`): a role still in a turn is stopped
+that long after, losing only the tool call in flight. Either way the claim keeps its workspace, the
+issue's branch and its session, which the new tree's start resumes with its phase's resume task. A
+turn that hangs inside the linger is the operator's to stop sooner: `legion claims suspend` stops it at the
+stop timeout (`worker_stop_timeout_seconds`) from then and makes the hold the operator's, so the new
+tree's start of that role waits for the operator, with the claim already re-pointed to the new tree,
+and `legion claims resume` relaunches its session there. A Sandbox the old tree left `Running`, none
+of whose claims runs any more, is relabelled and suspended in one patch fenced to the uid and
+resourceVersion it read, so the launch waits its pod out; while a claim of the old tree still runs,
+the launch is refused, naming it.
+That holds whether the new tree's start or the old tree's cleanup comes first: a cleanup that finds
+the issue already belongs to another tree hands its Sandbox over rather than deleting it (above),
+and the orphan sweep keeps a Sandbox while its home is the tree it is labelled with. A Sandbox's home
+ends when its issue can no longer be admitted into that tree. For a tree admission has not opened,
+a child set to `backlog`, `icebox` or `done` leaves the waiting line and lingers like any root, so
+its Sandbox stays until its linger expires; one whose label is taken off leaves the line with no
+linger, so its Sandbox goes at the next sweep. Taken out by its label, once it is `todo` with the
+label again it waits in the line and is admitted into the phase it stood in, continuing its run on a
+new volume from the issue's branch if the sweep has taken the old one: under `session_store:
+postgres` its roles' sessions continue from the table, and under `pvc` they went with the volume and
+start fresh ([Volume retention](#volume-retention)). Taken out by a status, it comes back as any
+root does after its linger: a new generation at `admitted`, its design gate, handoffs and pending
+READY cleared (`ClearTreeGeneration`), its architect starting over from the issue's branch. A
+hand-over fence counts only while the child's record still names the tree the fence was written
+for, and a hand-over Dispatch refuses permanently drops its fence with its row (`finishRefused`,
+`internal/daemon/outbox.go`). Past that the Sandbox is an orphan, which the sweep deletes with its
+volume, fenced and logged. Only a child re-admitted after its old tree's cleanup, one that had left
+the workflow before the close (a parked child the close does not hand over), finds its Sandbox and
+volume gone; its re-pointed claim still names its session (`Retree`,
 `internal/supervise/lifecycle.go`, keeps it: the supervisor knows nothing of Sandboxes, and a check
 there would race the cleanup). The launch then expects the volume to hold the clone
-(`LEGION_EXPECT_ISSUE_VOLUME`), `workspace-init` exits 3 on the fresh volume, the daemon logs
-`the issue's volume was lost` once and relaunches the role as a fresh session on the new volume
-([Volume retention](#volume-retention)): the re-admission runs, from the issue's branch, with the
-old sessions gone — the same path a root re-admitted after its own tree's close takes.
+(`LEGION_EXPECT_ISSUE_VOLUME`), `workspace-init` exits 3 on the fresh volume, the
+daemon logs `the issue's volume was lost` once and relaunches the role as a fresh session on the new
+volume ([Volume retention](#volume-retention)): the re-admission runs, from the issue's branch, with
+the old sessions gone — the same path a root re-admitted after its own tree's close takes.
 
 Before the daemon opens its store, so before any schema write, image probe or reconcile, it checks
 that Agent Sandbox is installed and refuses a namespace that holds a Sandbox of its project whose pod
@@ -1876,18 +1921,25 @@ ages a volume; it goes with its Sandbox, and the Sandbox goes:
   and its volume until the tree closes;
 - at the tree's close, linger expiry: the tree's cleanup foreground-deletes every remaining issue
   Sandbox of the tree, in any order, each taking the volume it owns (`CleanupTree`,
-  `internal/runtime/sandbox/cleanup.go`);
+  `internal/runtime/sandbox/cleanup.go`), except one whose home is another tree (a child whose
+  hand-over is pending, or one carried into a tree of its own that it is in or can still be admitted
+  into), which it hands over to that tree, relabelled and `Suspended`, keeping its volume;
 - by the orphan sweep, for a Sandbox of a tree whose cleanup confirmed or that has no lifecycle:
-  the sweep keeps every Sandbox of a live tree and, deleting a closed tree's, takes its volume with
-  it through the owner reference (`ReconcileOrphans`, `internal/runtime/sandbox/sandbox.go`).
+  the sweep keeps every Sandbox of a live tree, and one whose home is the tree it is labelled with (a
+  carried child waiting in admission's line, or inside its own linger), and, deleting any other,
+  takes its volume with it through the owner reference (`ReconcileOrphans`,
+  `internal/runtime/sandbox/sandbox.go`). A carried child that leaves the line before admission
+  opens its tree loses its Sandbox there: once its own linger ends when it is set to `backlog`,
+  `icebox` or `done`, and at the next sweep when its label is taken off.
 
-A child of a closed tree re-admitted as a root of its own while its old tree lingers keeps its
-Sandbox, its volume and its roles' sessions: the Sandbox is relabelled for the new tree
-(`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`), and the Sandbox alone — the daemon's
-identity has no PVC verb, which is why the claim carries no tree label to go stale. Re-admitted
-after the old tree's cleanup took its Sandbox and volume, it starts fresh on a new volume with
-`the issue's volume was lost` logged once, its re-pointed claims' sessions gone with the volume
-([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox)
+A child of a closed tree carried into a tree of its own keeps its Sandbox, its volume and its roles'
+sessions: the Sandbox is relabelled for the new tree, by the new tree's launch (`ensureSandbox`,
+`internal/runtime/sandbox/relaunch.go`) or by the old tree's cleanup when that comes first
+(`handOverSandbox`), and the Sandbox alone — the daemon's identity has no PVC verb, which is why the
+claim carries no tree label to go stale. A child re-admitted only after its old tree's cleanup took
+its Sandbox and volume (one that had left the workflow before the close) starts fresh on a new
+volume with `the issue's volume was lost` logged once, its re-pointed claims' sessions gone with the
+volume ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox)
 says why `Retree` keeps them). A near-full volume slows jj's
 working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL`
 (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;

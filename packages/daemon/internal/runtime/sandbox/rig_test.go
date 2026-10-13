@@ -110,15 +110,28 @@ func staticCredential(_ context.Context, role claim.Role) (ghconfig.Rendered, er
 }
 
 // fakeStore is the runtime's durable state, in memory: every tree is live (its lifecycle open)
-// unless closed says its cleanup confirmed, and an issue recorded sessions only when sessions says
-// so.
+// unless closed says its cleanup confirmed, an issue recorded sessions only when sessions says
+// so, a claim of an issue runs a process only when running names it, in the tree it names, and an
+// issue's Sandbox belongs to a tree only when homes names it (to none otherwise). The store's own
+// rule for a Sandbox's home is held by its tests (store.IssueSandboxHome); here a test sets it.
 type fakeStore struct {
 	mu               sync.Mutex
 	closed, sessions map[string]bool
+	running          map[string]runningClaim
+	homes            map[string]string
 }
 
+// runningClaim is a claim of an issue that runs a process (token:state), in tree.
+type runningClaim struct{ tree, claim string }
+
 func newFakeStore() *fakeStore {
-	return &fakeStore{closed: map[string]bool{}, sessions: map[string]bool{}}
+	return &fakeStore{closed: map[string]bool{}, sessions: map[string]bool{}, running: map[string]runningClaim{}, homes: map[string]string{}}
+}
+
+func (s *fakeStore) IssueSandboxHome(_ context.Context, _, issue string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.homes[issue], nil
 }
 
 func (s *fakeStore) IssueHasSessions(_ context.Context, _, issue string) (bool, error) {
@@ -131,6 +144,17 @@ func (s *fakeStore) TreeLive(_ context.Context, _, tree string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.closed[tree], nil
+}
+
+// IssueRunsElsewhere filters as the store's query does: the issue's running claim is named only
+// when its tree is not the tree asked about.
+func (s *fakeStore) IssueRunsElsewhere(_ context.Context, _, issue, tree string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.running[issue]; ok && c.tree != tree {
+		return c.claim, nil
+	}
+	return "", nil
 }
 
 // close records tree's cleanup as confirmed: what the tree left behind is then an orphan.
@@ -747,14 +771,15 @@ func (g *rig) sent(token claim.Token) []shimwire.Frame {
 }
 
 // sandboxObject is a Sandbox as the API would hold it, for a test's starting state: one the runtime
-// made, so it owns its volume (the `issue` claim template). A test that needs the tree-volume layout,
-// a Sandbox owning no volume, drops the template itself (withoutVolume).
+// made, so it owns its volume (the `issue` claim template), and carrying a resourceVersion, as every
+// object the API serves does. A test that needs the tree-volume layout, a Sandbox owning no volume,
+// drops the template itself (withoutVolume).
 func sandboxObject(t *testing.T, name, uid, mode string, labels map[string]string, conditions ...metav1.Condition) *unstructured.Unstructured {
 	t.Helper()
 	s := sandbox{
 		TypeMeta: metav1.TypeMeta{APIVersion: "agents.x-k8s.io/v1beta1", Kind: "Sandbox"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: testNamespace, UID: types.UID(uid), Labels: labels, Generation: 2,
+			Name: name, Namespace: testNamespace, UID: types.UID(uid), Labels: labels, Generation: 2, ResourceVersion: "1",
 			CreationTimestamp: metav1.NewTime(time.Date(2026, 9, 23, 11, 0, 0, 0, time.UTC)),
 		},
 		Spec: sandboxSpec{

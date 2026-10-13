@@ -183,7 +183,7 @@ func (r *outbox) RunOnce(ctx context.Context) error {
 				// finished instead, and the board follows the workflow again from the next one.
 				r.log.Error("outbox status write refused by Dispatch and dropped; the issue's later writes go on",
 					"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", err)
-				if err := r.finish(ctx, row); err != nil {
+				if err := r.finishRefused(ctx, row); err != nil {
 					r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 				}
 				continue
@@ -205,6 +205,34 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
+	}
+	return nil
+}
+
+// finishRefused finishes a status row Dispatch refused permanently. A hand-over's row drops its
+// fence in the same transaction: the write that would hand the child to Legion never lands, so no
+// admission consumes the fence, and one left behind would keep naming the child's own tree as its
+// Sandbox's home (store.IssueSandboxHome) for good. The child stays where it is until a person
+// labels it, which admits it as an orphan.
+func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow) error {
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+	}
+	write, _ := payload.(record.StatusWrite) // permanentStatusRefusal judges status rows alone
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if write.HandOver {
+			if err := r.records.DeleteHandoverAt(ctx, tx, row.Issue, write.HandOverTree, write.HandOverLinger); err != nil {
+				return err
+			}
+		}
+		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
+		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
+	}
+	if write.HandOver {
+		r.log.Warn("outbox hand-over refused by Dispatch; its fence is dropped and the child is not handed to Legion",
+			"row", row.ID, "issue", row.Issue, "tree", write.HandOverTree, "linger", write.HandOverLinger)
 	}
 	return nil
 }
@@ -565,6 +593,24 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"tree", issue.Tree, "role", payload.Role)
 			return nil
 		}
+		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
+		// on a child its tree left mid-run — may still run a role of its old tree: one in a turn when
+		// the old tree's close held its suspension, which that close's row, now of an earlier
+		// generation, finishes without acting on. No role of the new tree starts while one runs.
+		if err := r.stopElsewhere(ctx, issue); err != nil {
+			return err
+		}
+		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
+		// still name the tree it left; each is re-pointed before anything else here, so it binds this
+		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes it
+		// while this start waits (an operator's resume of a claim the operator suspended). The issue
+		// the supervisor keeps beside the machine (volumeLost) never moves with it: a claim's issue is
+		// fixed for its life.
+		if found && machine.Claim().Tree != issue.Tree {
+			if err := machine.Retree(ctx, issue.Tree); err != nil {
+				return err
+			}
+		}
 		// An operator's suspension holds its claim until the operator resumes
 		// it: the start, and the task it gives, wait on the row's backoff, before a quiesce
 		// interrupts the role whose phase it would take over. StartedBy refuses the same in the
@@ -593,15 +639,6 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}, "")
 			if err != nil {
 				return fmt.Errorf("create claim %s: %w", token, err)
-			}
-		}
-		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
-		// still name the tree it left; each is re-pointed before it starts here, so it binds this
-		// tree's lifecycle and launches in this tree's resources. The issue the supervisor keeps
-		// beside the machine (volumeLost) never moves with it: a claim's issue is fixed for its life.
-		if machine.Claim().Tree != issue.Tree {
-			if err := machine.Retree(ctx, issue.Tree); err != nil {
-				return err
 			}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
@@ -746,6 +783,72 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	default:
 		return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
 	}
+}
+
+// stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
+// runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
+// does. A claim in a turn holds the suspension for the turn's end and a launching one until its
+// agent is ready (supervise's suspend rows), so the start that asks is what waits, retried on its
+// backoff, charging no claim a launch. No close of the old tree reaches such a claim, since its
+// issue has left that tree, so the suspension names the deadline that close would have had
+// (carriedStopDeadline): a turn still running at the old root's linger expiry is stopped there, and
+// the claim keeps its workspace, the issue's branch and its session, which its next start resumes
+// with its phase's resume task. The hold lives in the claim's memory, so a restart that forgets it
+// is asked again by the start's next attempt, with the same deadline. Once none runs, every claim
+// of the issue may be re-pointed to the issue's tree (supervise.Machine.Retree), and the issue's
+// Sandbox, which no role of the old tree then runs in, is the new tree's to relabel
+// (runtime/sandbox's ensureSandbox). A claim already in the issue's tree is skipped on its view,
+// which only Retree changes, so a start waits on no decision a sibling claim has in flight.
+func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
+	var running []string
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken(r.project, issue.Key, role)
+		if err != nil {
+			return fmt.Errorf("derive the %s claim of %s: %w", role, issue.Key, err)
+		}
+		machine, found := r.supervisor.Machine(token)
+		if !found || machine.View().Claim.Tree == issue.Tree {
+			continue
+		}
+		held := machine.Claim()
+		if held.Tree == issue.Tree || held.RunsNothing() {
+			continue
+		}
+		var oldRoot *record.Issue
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			var err error
+			oldRoot, err = r.records.Issue(ctx, tx, held.Tree)
+			return err
+		}); err != nil {
+			return fmt.Errorf("read the root of tree %s, which claim %s still runs in: %w", held.Tree, token, err)
+		}
+		err = machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
+			Deadline: carriedStopDeadline(oldRoot, r.now(), r.supervisor.deps.Timeouts.Stop),
+			Reason:   fmt.Sprintf("%s moved from tree %s to tree %s", issue.Key, held.Tree, issue.Tree)})
+		var refused *supervise.RefusedError
+		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+			return fmt.Errorf("suspend claim %s, still running in tree %s: %w", token, held.Tree, err)
+		}
+		if held = machine.Claim(); !held.RunsNothing() {
+			running = append(running, fmt.Sprintf("%s:%s in tree %s", token, held.State, held.Tree))
+		}
+	}
+	if len(running) > 0 {
+		return wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", "))
+	}
+	return nil
+}
+
+// carriedStopDeadline is when a carried child's role still running in its old tree, under oldRoot,
+// is stopped if its turn has not ended: at the old root's linger expiry, where that tree's close
+// would have ended it, so a turn the linger leaves room for ends on its own. A root that no longer
+// lingers (or is not recorded) has no close left to wait for, so the stop is bounded as the
+// operator's is, at stop after now.
+func carriedStopDeadline(oldRoot *record.Issue, now time.Time, stop time.Duration) time.Time {
+	if oldRoot != nil && oldRoot.LingerUntil != nil {
+		return *oldRoot.LingerUntil
+	}
+	return now.Add(stop)
 }
 
 // reservedTreeClose runs a workflow tree close through its tree's durable cleanup reservation, and

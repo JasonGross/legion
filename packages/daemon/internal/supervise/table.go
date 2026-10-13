@@ -149,11 +149,17 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name.
+// suspension must name. Deadline, when set, is when a suspension held for a turn stops the process
+// mid-turn if the turn has not ended by then (holdSuspension); a daemon's suspension without one
+// waits for the turn however long it takes. The daemon sets one for a carried child's role still
+// running in its old tree, at the old root's linger expiry, where that tree's close would have
+// ended it (the daemon's outbox, stopElsewhere). The operator's suspension sets none: it is bounded
+// at the stop timeout from its arrival.
 type RequestSuspend struct {
-	Claim  claim.Token
-	Reason string
-	By     SuspendSource
+	Claim    claim.Token
+	Reason   string
+	By       SuspendSource
+	Deadline time.Time
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
@@ -399,12 +405,23 @@ var (
 	processless = []ClaimState{StateQueued, StateLaunchUncertain, StateSuspended, StateFailed, StateRetired}
 	unready     = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered}
 	gone        = []ClaimState{StateSuspended, StateFailed, StateRetired}
+	// runsNothing is where a claim has no process of its own, running or coming up: queued, for which
+	// nothing was launched, or gone. A launch whose outcome is uncertain may still run, so it is not
+	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
+	// queries take it as a parameter (RunsNothingStates).
+	runsNothing = append([]ClaimState{StateQueued}, gone...)
 )
 
 // LiveStates are the states of a claim whose process is up or coming up: launched, and not
 // suspended, failed or retired. It is a copy, so no caller changes the table's own set.
 func LiveStates() []ClaimState {
 	return slices.Clone(live)
+}
+
+// RunsNothingStates are the states of a claim with no process of its own (runsNothing). It is a
+// copy, so no caller changes the table's own set.
+func RunsNothingStates() []ClaimState {
+	return slices.Clone(runsNothing)
 }
 
 const (
@@ -490,9 +507,9 @@ func fillTable(t *builder) {
 	t.row(onProbeTimer, "probe the uncertain process again", reprobe, []ClaimState{StateLaunching, StateFailed}, live...)
 	t.ignore(onProbeTimer, noProcess, processless...)
 
-	t.row(onSuspendTimer, "the held operator suspension retries its stop", suspendAtTimeout,
+	t.row(onSuspendTimer, "the held suspension's deadline stops the turn, or its stop is tried again", suspendAtTimeout,
 		[]ClaimState{StateSuspended}, StateWorking, StateIdle, StateReady, StateLaunching, StateShimConnected, StateRegistered)
-	t.ignore(onSuspendTimer, "no operator suspension is held", StateQueued, StateLaunchUncertain, StateSuspended, StateRetired, StateFailed)
+	t.ignore(onSuspendTimer, "no suspension is held", StateQueued, StateLaunchUncertain, StateSuspended, StateRetired, StateFailed)
 
 	// The issue's volume, found lost by another claim of the issue.
 	t.row(onVolumeLost, "the issue's volume was lost: drop the session it held", sessionLost, nil,

@@ -886,3 +886,138 @@ if out=$(carried_child_sessions ${JSON.stringify(log)} ${prefix} ${planner} 2>&1
     expect(cameBack([lost(other), lost(other)], "kept")).toBe("ok kept");
   });
 });
+
+// mid-turn-carry judges a child carried while its planner still ran a turn in its old tree
+// (carried_mid_turn_ordered): a start of the new tree waited for the planner to stop, the planner's
+// suspension landed after that wait and after the driver's release, with no mid-turn stop, and the
+// architect's first launch came after it. The rows hold the daemon's order to a pass and each way a
+// new tree that did not wait, or a turn the hold's deadline cut, shows to a failure: a launch refused
+// for the Sandbox still running the old tree's roles, a turn cut mid-turn, no wait, a planner never
+// stopped or stopped before the release, and an architect launched before it.
+describe("stage 4b's mid-turn carry verdict", () => {
+  const prefix = "legion-legsmoke-legsmoke-14-";
+  const planner = `${prefix}planner`;
+  const architect = `${prefix}architect`;
+  const line = (msg: string, extra: object) => ({
+    time: "2026-10-13T00:10:00Z",
+    level: "INFO",
+    msg,
+    ...extra,
+  });
+  const wait = line("outbox row waits", {
+    row: 9,
+    kind: "supervise",
+    issue: "LEGSMOKE-14",
+    attempts: 1,
+    error: `start of LEGSMOKE-14 in tree LEGSMOKE-14 waits for ${planner}:working in tree LEGSMOKE-12 to stop`,
+  });
+  const stopped = line("supervise: suspended", {
+    claim: planner,
+    reason: "the tree of LEGSMOKE-12 lingers",
+    by: "daemon",
+  });
+  const launched = line("supervise: launched", { claim: architect, generation: 1, resumed: false });
+  const cut = line("supervise: the agent's turn has not ended; suspending it mid-turn", {
+    claim: planner,
+    level: "WARN",
+    by: "daemon",
+    deadline: "2026-10-13T00:18:00Z",
+  });
+  // released is the driver's release of the hold, before the suspension in `stopped`.
+  const released = "2026-10-13T00:09:30.123456789Z";
+  const refused = line("supervise: launch failed", {
+    claim: architect,
+    level: "WARN",
+    error:
+      "ensure its sandbox: sandbox legion-legsmoke-legsmoke-14, made for tree LEGSMOKE-12, does not fit this launch of tree LEGSMOKE-14 and still runs roles",
+  });
+  const verdict = (lines: object[], releasedAt: string = released) => {
+    const log = join(dir, `daemon-${++runs}.log`);
+    writeFileSync(log, `${lines.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const result = Bun.spawnSync([
+      "bash",
+      "-c",
+      `set -Eeuo pipefail
+${fn("carried_mid_turn_ordered")}
+if out=$(carried_mid_turn_ordered ${JSON.stringify(log)} ${prefix} ${planner} ${architect} LEGSMOKE-12 ${releasedAt} 2>&1); then echo "ok$out"; else echo "fail $out"; fi
+`,
+    ]);
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString().trim();
+  };
+
+  test("passes a new tree that waited for the planner, which stopped before the architect launched", () => {
+    expect(verdict([wait, stopped, launched])).toBe("ok");
+  });
+
+  test("fails a launch refused for the Sandbox still running the old tree's roles", () => {
+    expect(verdict([refused, wait, stopped, launched])).toBe(
+      `fail a launch of ${architect} met the Sandbox still running tree LEGSMOKE-12's roles: ${refused.error}`
+    );
+  });
+
+  test("fails a planner whose turn the hold's deadline cut mid-turn", () => {
+    expect(verdict([wait, cut, stopped, launched])).toBe(
+      `fail ${planner}'s turn was cut mid-turn at 2026-10-13T00:10:00Z (deadline 2026-10-13T00:18:00Z), not ended by the release at ${released}`
+    );
+  });
+
+  test("fails a planner suspended before the driver's release", () => {
+    expect(verdict([wait, stopped, launched], "2026-10-13T00:11:00.5Z")).toBe(
+      `fail ${planner} was suspended at 2026-10-13T00:10:00Z, before the release at 2026-10-13T00:11:00.5Z`
+    );
+  });
+
+  test("compares fractions of a second of different lengths as times, not as text", () => {
+    const at = (time: string) => ({ ...stopped, time });
+    // .25574538 is .255745380: one nanosecond after .255745379, though shorter as text.
+    expect(
+      verdict(
+        [wait, at("2026-10-13T00:10:00.25574538Z"), launched],
+        "2026-10-13T00:10:00.255745379Z"
+      )
+    ).toBe("ok");
+    expect(
+      verdict(
+        [wait, at("2026-10-13T00:10:00.255745379Z"), launched],
+        "2026-10-13T00:10:00.25574538Z"
+      )
+    ).toBe(
+      `fail ${planner} was suspended at 2026-10-13T00:10:00.255745379Z, before the release at 2026-10-13T00:10:00.25574538Z`
+    );
+  });
+
+  test("fails a new tree whose starts never waited for the planner", () => {
+    expect(verdict([stopped, launched])).toBe(
+      `fail no start of the new tree waited for ${planner} to stop in tree LEGSMOKE-12`
+    );
+  });
+
+  test("fails a planner never suspended after the wait, counting no suspension before it", () => {
+    expect(verdict([stopped, wait, launched])).toBe(
+      `fail ${planner} was never suspended after the new tree's start waited for it`
+    );
+  });
+
+  test("fails an architect launched before the planner stopped", () => {
+    expect(verdict([wait, launched, stopped])).toBe(
+      `fail ${architect} launched before ${planner} stopped in tree LEGSMOKE-12`
+    );
+  });
+
+  test("fails an architect that never launched", () => {
+    expect(verdict([wait, stopped])).toBe(`fail ${architect} never launched`);
+  });
+
+  test("reads only the child's own claims and its own old tree", () => {
+    const other = { ...refused, claim: "legion-legsmoke-legsmoke-140-architect" };
+    const elsewhere = {
+      ...wait,
+      error: wait.error.replace("in tree LEGSMOKE-12", "in tree LEGSMOKE-99"),
+    };
+    expect(verdict([other, wait, stopped, launched])).toBe("ok");
+    expect(verdict([elsewhere, stopped, launched])).toBe(
+      `fail no start of the new tree waited for ${planner} to stop in tree LEGSMOKE-12`
+    );
+  });
+});

@@ -162,6 +162,36 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 	return may, nil
 }
 
+// runsNothingStates is supervise's runs-nothing set (supervise.RunsNothingStates), as the text
+// array a query binds: the store names no state of that set itself.
+func runsNothingStates() []string {
+	states := supervise.RunsNothingStates()
+	names := make([]string, len(states))
+	for i, state := range states {
+		names[i] = string(state)
+	}
+	return names
+}
+
+// IssueRunsElsewhere names, as token:state, a stored claim of issue whose tree is not tree and that
+// does not run nothing: a claim in a state with a process of its own, running or coming up
+// (supervise.RunsNothingStates), or one that still records a locator. It answers "" when none
+// does. A child carried into a tree of its own keeps its Sandbox, labelled with the tree it left,
+// until a launch of its new tree relabels it: while a claim of the old tree runs there, the relabel
+// would end it.
+func (s *Store) IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error) {
+	var running string
+	err := s.pool.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and tree <> $3
+		and not (state = any($4) and locator is null) order by token limit 1`, project, issue, tree, runsNothingStates()).Scan(&running)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the claims of issue %s outside tree %s: %w", issue, tree, err)
+	}
+	return running, nil
+}
+
 // HasLegacySandboxClaims is a raw JSON census used before Claims unmarshals locators. A legacy
 // per-claim Sandbox locator lacks podUid/container/generation, so the normal strict locator
 // decoder would refuse first without naming the layout migration that is needed.

@@ -544,3 +544,69 @@ func TestIssueHasSessionsCountsOnlyTheIssuesOwnClaims(t *testing.T) {
 		t.Errorf("%s's retired architect recorded session %s, yet IssueHasSessions says none", root.Issue, root.SessionFile)
 	}
 }
+
+// IssueRunsElsewhere names a claim of the issue in another tree that may hold a process: one in a
+// state supervise's RunsNothing does not hold, or one that still records a locator. Every claim
+// state is walked against RunsNothing, so the query and the machine read one set; a launch whose
+// outcome is uncertain and a suspended claim that still records a locator are named. A claim of the
+// asking tree or of another issue is not.
+func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	elsewhere := func(tree string) string {
+		t.Helper()
+		got, err := store.IssueRunsElsewhere(ctx, "legion", "LEGION-209", tree)
+		if err != nil {
+			t.Fatalf("IssueRunsElsewhere(LEGION-209, %s): %v", tree, err)
+		}
+		return got
+	}
+	implementer := tmuxClaim("legion-LEGION-209-implementer")
+	locator := implementer.Locator
+	put := func(state supervise.ClaimState, withLocator bool) {
+		t.Helper()
+		implementer.State, implementer.Locator = state, nil
+		if withLocator {
+			implementer.Locator = locator
+		}
+		if err := store.PutClaim(ctx, implementer); err != nil {
+			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
+		}
+	}
+	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
+		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
+		supervise.StateFailed, supervise.StateRetired}
+	for _, state := range all {
+		put(state, false)
+		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
+		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
+			t.Errorf("a %s claim of tree LEGION-208 without a locator: named %t, want %t, as RunsNothing says", state, named, runs)
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		state       supervise.ClaimState
+		withLocator bool
+	}{
+		{"a launch whose outcome is uncertain", supervise.StateLaunchUncertain, false},
+		{"a suspended claim that still records a locator", supervise.StateSuspended, true},
+		{"an idle claim with its locator", supervise.StateIdle, true},
+	} {
+		put(tc.state, tc.withLocator)
+		if got, want := elsewhere("LEGION-209"), "legion-LEGION-209-implementer:"+string(tc.state); got != want {
+			t.Errorf("%s of tree LEGION-208: IssueRunsElsewhere = %q, want %q", tc.name, got, want)
+		}
+		if got := elsewhere("LEGION-208"); got != "" {
+			t.Errorf("%s, asked by the claim's own tree: IssueRunsElsewhere = %q, want none", tc.name, got)
+		}
+	}
+	other := tmuxClaim("legion-LEGION-210-implementer")
+	other.Issue = "LEGION-210"
+	put(supervise.StateSuspended, false)
+	if err := store.PutClaim(ctx, other); err != nil {
+		t.Fatalf("put %s: %v", other.Token, err)
+	}
+	if got := elsewhere("LEGION-209"); got != "" {
+		t.Fatalf("only another issue's claim runs: IssueRunsElsewhere = %q, want none", got)
+	}
+}

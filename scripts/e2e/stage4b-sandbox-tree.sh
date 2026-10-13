@@ -13,16 +13,17 @@
 # `done`, through one changes-requested review round whose thread the reviewer opens, lingers, and
 # closes; while its planner holds, the driver files two children under it, each in an issue pod and
 # on a volume of its own, then closes one as done and parks the other in backlog, sets it todo again
-# so the daemon resumes its parked planner by rule, and parks it once more. Its architect is
-# suspended from the operator shell while its implementer completes, and stays held until the
-# operator resumes it. Tree 2 runs through its planner beside tree 1, carrying the
-# repository-configuration fixture, supplies the capability report every session sends at its start
-# (full-agent), and is then moved to backlog. Tree 3 is admitted when tree 2 leaves the line,
-# supplies the held phase the controller checkpoint needs and, held, the planner whose workspace
-# turns a capability off and on (full-agent-negative), and is taken out from an operator shell
-# (controller-walk). Tree 4 is admitted once tree 3 has left, supplies a planner killed mid-turn and
-# an implementer killed until it is held, and is taken out the same way. Between the operator's
-# controller and tree 4, the daemon runs under `controller: daemon` and back
+# so the daemon resumes its parked planner by rule, and parks it once more; two more children run
+# when it closes, one left mid-run for its linger's hand-over and one in a turn the proof human's
+# label carries into a tree of its own. Its architect is suspended from the operator shell while its
+# implementer completes, and stays held until the operator resumes it. Tree 2 runs through its
+# planner beside tree 1, carrying the repository-configuration fixture, supplies the capability
+# report every session sends at its start (full-agent), and is then moved to backlog. Tree 3 is
+# admitted when tree 2 leaves the line, supplies the held phase the controller checkpoint needs and,
+# held, the planner whose workspace turns a capability off and on (full-agent-negative), and is taken
+# out from an operator shell (controller-walk). Tree 4 is admitted once tree 3 has left, supplies a
+# planner killed mid-turn and an implementer killed until it is held, and is taken out the same way.
+# Between the operator's controller and tree 4, the daemon runs under `controller: daemon` and back
 # (daemon-controller-liveness). Each checkpoint prints `== <name>`, what it observed with the source
 # revision, the image digest and the two plugins' versions recorded once in `run.json`, and
 # `CHECK <name>: PASS`. The first that fails ends the run non-zero with `CHECK <name>: FAIL`, naming
@@ -186,8 +187,8 @@ stream=ENVOY_NOTIFICATIONS
 admission_cap=2
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own under tree 1's architect, outside the cap, which counts roots.
-# Child 3, filed at mid-run-child, runs only once child 1 is released and child 2 parked, so it
-# raises no peak.
+# Children 3 and 4, filed at mid-run-child and mid-turn-child, run only once child 1 is released and
+# child 2 parked, and by then tree 2 has left its slot, so they raise no peak.
 tree1_children=2
 # The pods the run needs placed at once: the cap's roots (tree 1 and tree 2) and tree 1's children,
 # every one an issue pod. The run launches no controller pod: its controller starts from the
@@ -306,6 +307,16 @@ child3_status=
 # The uid of the PVC child 3 holds in tree 1 (mid-run-child), which carried-child compares with the
 # PVC the child has in its own tree.
 child3_tree1_volume=
+# Child 4 of tree 1 (mid-turn-child): its planner runs the driver's hold command, a turn in flight,
+# when tree 1 closes, and the proof human then carries it into a tree of its own (mid-turn-carry).
+# Its pod is its Sandbox's name; the Sandbox's and PVC's uids and the planner's session, read in
+# tree 1, are what mid-turn-carry holds the carried tree to. The release file ends the hold.
+child4=
+child4_pod=
+child4_sandbox_uid=
+child4_volume=
+child4_session=
+child4_release=/tmp/stage4b-mid-turn-release
 tree2=
 tree3=
 tree4=
@@ -1352,6 +1363,45 @@ carried_child_sessions() {
       ;;
   esac
 }
+# carried_mid_turn_ordered LOG PREFIX PLANNER ARCHITECT OLD RELEASED is mid-turn-carry's verdict,
+# from the daemon log LOG, on a child carried into a tree of its own while its planner claim PLANNER
+# still ran a turn in its old tree OLD: no role of the new tree launched while that turn ran, and the
+# turn ended on its own after the driver released it at RELEASED (an RFC 3339 UTC time). A start of
+# the new tree waited for PLANNER to stop (the outbox's `outbox row waits` line for a start of the
+# issue, whose error names the planner and OLD: daemon/outbox.go stopElsewhere, logged at INFO on a
+# row's first attempt). PLANNER's suspension landed after that wait and after RELEASED (`supervise:
+# suspended`, supervise/suspend.go), and no line says its turn was cut mid-turn (`supervise: the
+# agent's turn has not ended; suspending it mid-turn`, suspendAtTimeout, which the hold's deadline at
+# OLD's linger expiry would log). ARCHITECT's first launch (`supervise: launched`,
+# supervise/machine.go) came after that suspension. No claim of the issue (tokens starting with
+# PREFIX, claim_token's issue prefix) may have logged a Sandbox refused for still running another
+# tree's roles (runtime/sandbox/relaunch.go ensureSandbox), which a launch that did not wait meets.
+# Prints the reason and fails otherwise.
+carried_mid_turn_ordered() {
+  local verdict
+  verdict=$(jq -R -s -r --arg prefix "$2" --arg planner "$3" --arg architect "$4" --arg old "$5" --arg released "$6" '
+    def at: [(sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601), ((capture("\\.(?<f>[0-9]+)Z$").f // "0") | "0." + . | tonumber)];
+    [split("\n")[] | fromjson? | select(type == "object")] as $log
+    | ($released | at) as $releasedAt
+    | ([$log | to_entries[] | select(.value.msg == "outbox row waits" and ((.value.error // "") as $e
+        | ($e | contains("waits for ")) and ($e | contains($planner + ":")) and ($e | contains("in tree " + $old)))) | .key] | first) as $wait
+    | ([$log | to_entries[] | select(.value.msg == "supervise: suspended" and .value.claim == $planner and $wait != null and .key > $wait)] | first) as $stopped
+    | ([$log | to_entries[] | select(.value.msg == "supervise: launched" and .value.claim == $architect) | .key] | first) as $launched
+    | [$log[] | select(((.claim // "") | startswith($prefix)) and (tostring | contains("does not fit this launch of tree")))] as $refused
+    | [$log[] | select(.msg == "supervise: the agent'"'"'s turn has not ended; suspending it mid-turn" and .claim == $planner)] as $cut
+    | if ($refused | length) > 0 then "FAIL: a launch of \($refused[0].claim) met the Sandbox still running tree \($old)'"'"'s roles: \(($refused[0].error // $refused[0].msg) | tostring | .[0:300])"
+      elif ($cut | length) > 0 then "FAIL: \($planner)'"'"'s turn was cut mid-turn at \($cut[0].time) (deadline \($cut[0].deadline // "none")), not ended by the release at \($released)"
+      elif $wait == null then "FAIL: no start of the new tree waited for \($planner) to stop in tree \($old)"
+      elif $stopped == null then "FAIL: \($planner) was never suspended after the new tree'"'"'s start waited for it"
+      elif ($stopped.value.time | at) < $releasedAt then "FAIL: \($planner) was suspended at \($stopped.value.time), before the release at \($released)"
+      elif $launched == null then "FAIL: \($architect) never launched"
+      elif $launched < $stopped.key then "FAIL: \($architect) launched before \($planner) stopped in tree \($old)"
+      else "ok" end' "$1") || return 1
+  [ "$verdict" = ok ] || {
+    printf '%s\n' "${verdict#FAIL: }" >&2
+    return 1
+  }
+}
 # liveness_verdict PHASE MARK [--arg NAME VALUE]... is lib/controller-liveness-verdict.jq's verdict
 # for PHASE on the daemon log's lines after line MARK (daemon-controller-liveness).
 liveness_verdict() {
@@ -2141,10 +2191,10 @@ remove_run_branches() {
 # profile on this machine and goes with that profile at teardown (transcripts/controller).
 collect_transcripts() {
   local issue role pod
-  for issue in $tree1 $tree2 $tree3 $tree4 $child1 $child2 $child3; do
+  for issue in $tree1 $tree2 $tree3 $tree4 $child1 $child2 $child3 $child4; do
     pod=$(issue_pod "$issue") || continue
     role=architect
-    case $issue in "$child1" | "$child2" | "$child3") role=planner ;; esac
+    case $issue in "$child1" | "$child2" | "$child3" | "$child4") role=planner ;; esac
     op exec "$pod" -c "$role" -- tar -C /home/legion/.omp/profiles/legion/agent/sessions -cf - . 2>/dev/null |
       tar -C "$evidence/transcripts" -xf - 2>/dev/null || true
   done
@@ -2610,11 +2660,14 @@ refused=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -H "Authorizatio
   fail "production Dispatch did not answer the invalid-bearer control: $(scrub <<<"$refused")"
 [ "$refused" = 401 ] || fail "production Dispatch answered $refused to an invalid bearer, not 401, so the bearer's read proves nothing"
 note "[dispatch] the run's bearer reads whoami as an agent session; an invalid bearer is refused 401"
-# LEGSMOKE's stale todo roots would be admitted at boot ahead of the run's own.
-stale=$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[] | select(.parent == null or .parent == "") | .key')
+# LEGSMOKE's stale todo issues would be taken ahead of the run's own: a root admitted at boot, a
+# leaf labelled and admitted by the controller's walk. A run that fails between the checkpoints
+# that file a child todo (mid-run-child, mid-turn-child) and the ones that take it out leaves it
+# there, so every stale todo issue, root or child, goes to backlog.
+stale=$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')
 for key in $stale; do
   set_status "$key" backlog
-  note "moved stale todo root $key to backlog"
+  note "moved stale todo issue $key to backlog"
 done
 [ -z "$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')" ] || fail "$project still holds todo issues"
 # The configured stream carries both halves of the workflow's intake. Dispatch publishes every
@@ -2731,8 +2784,9 @@ admits next.
 ## A tree's children in this proof
 
 The driver files child issues under a root itself, in `todo`, and later closes one as `done`, parks
-another in `backlog`, and leaves a third mid-run when its root closes, which the daemon hands to
-Legion as a tree of its own; each child's planner holds for the driver like every other role. A
+another in `backlog`, leaves a third mid-run when its root closes, which the daemon hands to
+Legion as a tree of its own, and labels a fourth into a tree of its own while its planner runs the
+driver's hold; each child's planner holds for the driver like every other role. A
 `child-closed` or `child-status` notice of this run needs no action from the root architect: start,
 re-run, park or close nothing for it, write nothing about it, and keep waiting for the next
 targeted message.
@@ -4988,6 +5042,27 @@ child3_tree1_volume=$(op get pvc "${found%% *}" -o jsonpath='{.metadata.uid}') |
 note "[dispatch] $child3: todo under $tree1, no legion label; its planner claim records tree $child3_tree, and holds in planning in pod $child3_pod with PVC ${found%% *} (uid $child3_tree1_volume) Bound"
 pass
 
+begin mid-turn-child
+# LEGION-710's setup: a fourth child of tree 1, filed the same way as child 3, whose planner is put
+# in a turn that is still running when tree 1 closes (done sends it the hold). The carry that follows
+# (mid-turn-carry) must stop that turn's role before anything of the child's new tree launches. Its
+# Sandbox's uid, its PVC's uid and its planner's session are read here, in tree 1, so mid-turn-carry
+# can hold the carried tree to keeping all three. It runs beside child 3 and the root, no more of tree
+# 1's pods at once than issue-independence's.
+child4=$(new_child "Stage 4b proof tree 1 child 4: mid-turn when tree 1 closes, then carried into a tree of its own ($work)" "$tree1") ||
+  fail "Dispatch could not create tree 1's fourth child"
+on_issue "$child4" until_true 900 "planner worker on $child4, a child of $tree1, to register from an issue pod of its own" issue_worker_live "$child4" planner
+assert_claim_endpoints "$child4" planner
+claim_by_token "$(claim_token "$child4" planner)" | jq -e --arg tree "$tree1" '.tree == $tree' >/dev/null ||
+  fail "the daemon records $child4's planner claim under another tree than $tree1: $(claim_by_token "$(claim_token "$child4" planner)" | jq -c '{tree, state}')"
+child4_pod=$(claim_sandbox "$child4" planner) || fail "$child4's planner has no Sandbox locator"
+child4_sandbox_uid=$(op get sandbox "$child4_pod" -o jsonpath='{.metadata.uid}') || fail "the operator could not read $child4's Sandbox $child4_pod"
+assert_one_bound_pvc "$child4" ""
+child4_volume=$(op get pvc "${found%% *}" -o jsonpath='{.metadata.uid}') || fail "the operator could not read $child4's PVC ${found%% *}"
+child4_session=$(issue_worker_session "$child4" planner) || fail "$child4's planner records no session"
+note "[dispatch] $child4: todo under $tree1, no legion label; its planner holds in planning in pod $child4_pod (Sandbox uid $child4_sandbox_uid, PVC ${found%% *} uid $child4_volume), session $child4_session"
+pass
+
 begin "done"
 on_tree "$tree1" wait_for_worker "$tree1" merger
 send_agent "$tree1" merger "Stage 4b proof READY operation: verify pull request #$pr_number is ready to merge and call the legion tool's handoff_complete with ready true."
@@ -5022,6 +5097,14 @@ note "READY #$pr_number was posted at $ready_head with $(jq length "$evidence/re
 hold_smoke_main
 merge_when_clean "$repo" "$pr_number" --squash --delete-branch
 on_tree "$tree1" wait_for_phase "$tree1" production_check 600
+# Child 4's planner starts its hold now, before the production check completes and the architect
+# signs off on its own, so its turn is in flight when tree 1 closes, and short enough to stay under
+# the bash tool's timeout until mid-turn-carry releases it: one shell loop polling for the release
+# file, bounded at 250 polls of 13 s, whose /usr/bin/sleep 13 marks it in the planner's container.
+send_agent "$child4" planner "Stage 4b proof mid-turn hold: run exactly this as one bash tool call, with the tool's timeout at least 3600 seconds, and change nothing else: i=0; until [ -e $child4_release ] || [ \$i -ge 250 ]; do /usr/bin/sleep 13; i=\$((i+1)); done; test -e $child4_release && echo RELEASED. When it finishes, reply RELEASED and end your turn; call no other tool."
+child4_holds() { issue_worker_state "$child4" planner working && pod_runs "$child4_pod" planner "/usr/bin/sleep 13"; }
+on_issue "$child4" until_true 300 "$child4's planner to run its hold in pod $child4_pod" child4_holds
+note "$child4's planner runs its hold, a turn in flight, while tree 1 finishes"
 if ! production_check_reported "$tree1" >/dev/null 2>&1; then
   on_tree "$tree1" wait_for_worker "$tree1" implementer
   send_agent "$tree1" implementer "Stage 4b proof production check: verify the merged smoke change through its repository surface, record the production-check handoff and required PR/Dispatch record, then complete the phase."
@@ -5073,6 +5156,136 @@ dispatch_events "$tree1" | jq -e 'any(.[]; .type == "issue.claimed" and .actor.k
 root_claim_released() { dispatch_get "issues/$1" | jq -e '.claim == null' >/dev/null; }
 until_true 120 "$tree1's root claim to be released by its done" root_claim_released "$tree1"
 note "$tree1's architect claimed its root issue, and the done released the claim"
+pass
+
+begin mid-turn-carry
+# LEGION-710, on the Sandbox runtime against production Dispatch: a child carried into a tree of its
+# own while a role of its old tree is in a turn. Tree 1's close asked to suspend child 4's planner,
+# whose hold is still running, so the suspension is held for the turn's end. The proof human then
+# labels child 4, which still shows todo, as a person handing it to Legion would while tree 1
+# lingers; admission carries it as an orphan (`admission orphan`) into a tree of its own at
+# generation 2 in planning, and the close's suspend row, of generation 1, finishes without acting. A
+# carry by the linger's own hand-over would mean the linger had expired first, and the release
+# below needs the linger still running, so only the orphan carry passes. While the turn runs, the
+# new tree's starts wait for the planner to stop (daemon/outbox.go stopElsewhere), bounded at tree
+# 1's linger expiry, where its close would have ended the turn: nothing of the new tree launches, and
+# the Sandbox stays tree 1's and Running. The driver then ends the turn with the release file, inside
+# the linger, so
+# the turn ends on its own: the planner is suspended by the daemon after the release with its session,
+# never cut mid-turn by the deadline, the architect launches in the child's own tree
+# (carried_mid_turn_ordered holds the order and the turn's end, held to a fabricated refusal and a
+# fabricated cut turn here and in stage4b-verdict.test.ts), the launch relabels the Sandbox the old
+# tree left Running, keeping its uid and volume, and the planner comes back on its kept session in
+# the new tree, moved once (retree_msg), given its phase's resume task. Child 4 is then taken out, so
+# its pods go before node-release.
+child4_planner=$(claim_token "$child4" planner)
+child4_architect=$(claim_token "$child4" architect)
+child4_close_held() {
+  claim_by_token "$child4_planner" | jq -e --arg tree "$tree1" '.tree == $tree and .state == "working" and .suspensionHeld == true' >/dev/null
+}
+until_true 300 "tree 1's close to hold $child4's planner's suspension for its turn" child4_close_held
+# One read of the planner's processes can straddle the end of one of the hold's sleeps and the
+# start of the next, and so miss the hold that runs; the hold is judged by any read inside 60 s,
+# more than four of its polls. A hold not seen in that time is written to
+# mid-turn-hold-lost.txt in the evidence: the planner container's processes, the claim as
+# `legion claims` shows it, and the last lines of the agent's transcript, which say whether the
+# hold's bash call returned.
+child4_hold_lost() {
+  local view file dump=$evidence/mid-turn-hold-lost.txt
+  view=$(claim_by_token "$child4_planner" 2>&1)
+  file=$(jq -r '.sessionFile // empty' <<<"$view" 2>/dev/null)
+  {
+    echo "== $child4's planner claim"
+    printf '%s\n' "$view"
+    echo "== the planner container's processes in pod $child4_pod"
+    pod_commands "$child4_pod" planner 2>&1 | awk 'NF' | cut -c1-300
+    echo "== the last lines of its transcript (${file:-no session file recorded})"
+    [ -z "$file" ] || pod_exec "$child4_pod" planner tail -n 6 "$file" 2>&1 | cut -c1-1200
+  } | scrub >"$dump"
+  note "the hold was not seen; the planner's processes, claim and transcript tail are in $dump:"
+  sed 's/^/     /' "$dump"
+}
+timeout_hook=child4_hold_lost
+until_true 60 "$child4's planner to still run its hold in pod $child4_pod now tree 1 has closed" pod_runs "$child4_pod" planner "/usr/bin/sleep 13"
+timeout_hook=limit_pending_blocked
+note "tree 1's close holds $child4's planner's suspension for its turn, its hold still running"
+shown=$(dispatch_get "issues/$child4") || fail "Dispatch could not be read for $child4"
+[ "$(jq -r .status <<<"$shown")" = todo ] || fail "Dispatch shows $child4 $(jq -r .status <<<"$shown"), want the todo it was released in"
+labels=$(jq -c '(.labels // []) + ["legion"]' <<<"$shown")
+dispatch_human PATCH "issues/$child4" "$(jq -cn --argjson labels "$labels" '{labels: $labels}')" >/dev/null ||
+  fail "the proof human could not put the legion label on $child4"
+child4_carried() {
+  daemon_state | jq -e --arg issue "$child4" '(.issues[$issue] | .generation == 2 and .phase == "planning") and (.admission.active | index($issue)) != null' >/dev/null
+}
+until_true 600 "$child4 to become a tree of its own at generation 2 in planning, admitted into a slot" child4_carried
+orphaned=$(log_lines "admission orphan" | jq -c --arg issue "$child4" 'select(.issue == $issue)' | grep -c . || true)
+[ "$orphaned" -eq 1 ] || fail "the daemon logged \"admission orphan\" $orphaned times for $child4, want its one carry by the proof human's label inside tree 1's linger"
+carry_path="admission's orphan carry of the proof human's labelled todo"
+child4_start_waits() {
+  log_lines "outbox row waits" | jq -e -s --arg issue "$child4" --arg planner "$child4_planner" --arg old "$tree1" \
+    'any(.[]; .issue == $issue and ((.error // "") | contains($planner + ":") and contains("in tree " + $old)))' >/dev/null
+}
+until_true 300 "a start of $child4's tree to wait for its planner to stop in $tree1" child4_start_waits
+launched=$(log_lines "supervise: launched" | jq -c --arg c "$child4_architect" 'select(.claim == $c)' | grep -c . || true)
+[ "$launched" = 0 ] || fail "$child4's architect launched $launched times while its planner still ran its turn in $tree1"
+held=$(claim_by_token "$child4_planner") || fail "legion claims list holds no claim $child4_planner"
+jq -e --arg tree "$tree1" '.tree == $tree and .state == "working"' <<<"$held" >/dev/null ||
+  fail "$child4's planner while the new tree waits is $(jq -c '{tree, state}' <<<"$held"), want still working in $tree1"
+sandbox_now=$(op get sandbox "$child4_pod" -o jsonpath='{.metadata.uid} {.metadata.labels.legion\.dev/tree} {.spec.operatingMode}') ||
+  fail "the operator could not read $child4's Sandbox $child4_pod"
+[ "$sandbox_now" = "$child4_sandbox_uid $tree1 Running" ] ||
+  fail "$child4's Sandbox while its planner's turn runs is '$sandbox_now', want '$child4_sandbox_uid $tree1 Running'"
+note "$child4 is a tree of its own at generation 2 in planning, by $carry_path; its starts wait for the planner's turn, nothing of the new tree launched, and its Sandbox is still tree 1's and Running"
+# The turn must end on the release, inside tree 1's linger (linger_hours 0.3): at its expiry the new
+# tree's hold would cut it instead, which the verdict refuses. So the release goes in only with a
+# minute of the linger left, read from the daemon's own line for tree 1's linger.
+tree1_until=$(log_lines "workflow: tree lingers" | jq -r -s --arg tree "$tree1" '[.[] | select(.tree == $tree)] | last | .until // empty')
+[ -n "$tree1_until" ] || fail "the daemon logged no linger for $tree1"
+left=$(($(date -u -d "$tree1_until" +%s) - $(date -u +%s)))
+[ "$left" -ge 60 ] || fail "only ${left}s of $tree1's linger (until $tree1_until) are left at the release; mid-turn-carry needs $child4's turn to end inside it"
+released_at=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+pod_exec "$child4_pod" planner touch "$child4_release" || fail "the operator could not write $child4_release in $child4's planner container"
+note "the driver released $child4's hold at $released_at, ${left}s before $tree1's linger expires at $tree1_until"
+child4_role_back() {
+  claim_by_token "$1" | jq -e --arg tree "$child4" '.tree == $tree and .locator != null and (.state | IN("ready", "idle", "working"))' >/dev/null
+}
+on_issue "$child4" until_true 900 "$child4's planner to stop and come back in its own tree" child4_role_back "$child4_planner"
+on_issue "$child4" until_true 900 "$child4's architect to launch and register in its own tree" child4_role_back "$child4_architect"
+mid_turn_verdict() { carried_mid_turn_ordered "$1" "$(claim_token "$child4" "")" "$child4_planner" "$child4_architect" "$tree1" "$released_at"; }
+mid_turn_verdict "$daemon_log" || fail "$child4's new tree did not wait for its planner's released turn: $(mid_turn_verdict "$daemon_log" 2>&1)"
+# Controls: the same log with one fabricated launch of the architect refused for the Sandbox still
+# running tree 1's roles, the failure the new tree meets when it does not wait, and the same log
+# with one fabricated mid-turn stop of the planner at tree 1's linger expiry, the turn cut instead of
+# released, each fail the verdict.
+cp "$daemon_log" "$work/daemon-mid-turn-refused.log"
+jq -cn --arg claim "$child4_architect" --arg error "ensure its sandbox: sandbox $child4_pod, made for tree $tree1, does not fit this launch of tree $child4 and still runs roles; fabricated by the driver" \
+  '{time: (now | todate), level: "WARN", msg: "supervise: launch failed", claim: $claim, error: $error}' >>"$work/daemon-mid-turn-refused.log"
+expect_failure mid-turn-refused mid_turn_verdict "$work/daemon-mid-turn-refused.log"
+cp "$daemon_log" "$work/daemon-mid-turn-cut.log"
+jq -cn --arg claim "$child4_planner" --arg deadline "$tree1_until" \
+  '{time: (now | todate), level: "WARN", msg: "supervise: the agent'"'"'s turn has not ended; suspending it mid-turn", claim: $claim, by: "daemon", deadline: $deadline}' >>"$work/daemon-mid-turn-cut.log"
+expect_failure mid-turn-cut mid_turn_verdict "$work/daemon-mid-turn-cut.log"
+came_back=$(claim_by_token "$child4_planner") || fail "legion claims list holds no claim $child4_planner"
+[ "$(jq -r .session <<<"$came_back")" = "$child4_session" ] ||
+  fail "$child4's planner came back in its own tree as session $(jq -r .session <<<"$came_back"), not its kept $child4_session"
+retrees=$(log_lines "$retree_msg" | jq -c --arg c "$child4_planner" --arg from "$tree1" --arg to "$child4" 'select(.claim == $c and .from == $from and .to == $to)' | grep -c . || true)
+[ "$retrees" = 1 ] || fail "the daemon logged \"$retree_msg\" from $tree1 to $child4 for $child4_planner $retrees times, want once"
+sandbox_now=$(op get sandbox "$child4_pod" -o jsonpath='{.metadata.uid} {.metadata.labels.legion\.dev/tree}') ||
+  fail "the operator could not read $child4's Sandbox $child4_pod"
+[ "$sandbox_now" = "$child4_sandbox_uid $child4" ] ||
+  fail "$child4's Sandbox in its own tree is '$sandbox_now', want the same uid relabelled: '$child4_sandbox_uid $child4'"
+assert_one_bound_pvc "$child4" " in its own tree"
+volume_now=$(op get pvc "${found%% *}" -o jsonpath='{.metadata.uid}') || fail "the operator could not read $child4's PVC ${found%% *}"
+[ "$volume_now" = "$child4_volume" ] || fail "$child4's PVC in its own tree is uid $volume_now, not $child4_volume, the volume it had in $tree1"
+resume4="Issue: $child4. Phase: planning. Resume the existing phase work."
+child4_resume_given() {
+  claim_session_text "$child4" planner | jq -R -s -e --arg want "$resume4" \
+    'any(split("\n")[] | fromjson? | select(.type == "message" and .message.role == "user"); .message.content | tostring | contains($want))' >/dev/null
+}
+until_true 300 "$child4's planner session to be given its phase's resume task" child4_resume_given
+note "$child4's planner was suspended by the daemon once its turn ended, before the architect's first launch; it moved from $tree1 to $child4 once and came back on its kept session $child4_session, given \"$resume4\"; the Sandbox $child4_pod kept uid $child4_sandbox_uid, relabelled $child4, and its PVC kept uid $child4_volume"
+take_out "$child4"
+note "$child4 taken out: Dispatch shows it in backlog and its tree's pods are gone"
 pass
 
 begin node-release
@@ -5138,12 +5351,12 @@ pass
 begin close
 # At linger expiry the tree's cleanup foreground-deletes every Sandbox of tree 1, each with the
 # volume it owns: the root's and child 2's, kept from child-release (child 1's went with its done).
-# Child 3's, left mid-run, is the cleanup's too unless the child's hand-over has already relaunched
-# it in the child's own tree, relabelling its Suspended Sandbox before the cleanup lists tree 1's
-# (runtime/sandbox/relaunch.go). A Dispatch that knows labels_add takes the hand-over write at the
-# expiry itself, so that race is real there, and the PVC a carried child gets in its own tree carries
-# the same issue label: no check of child 3's PVC holds here. Its Sandbox must stop being tree 1's
-# either way (the tree label read below), and carried-child judges its volume against the uid
+# Child 3's, left mid-run, is handed over instead: its hand-over is pending at the cleanup (production
+# Dispatch rides the write out), so the cleanup relabels its Sandbox for the child's own tree and
+# leaves it Suspended with its volume (runtime/sandbox/cleanup.go handOverSandbox); or the child's
+# own launch relabelled it first (runtime/sandbox/relaunch.go). The PVC a carried child keeps carries
+# the same issue label, so no check of child 3's PVC holds here. Its Sandbox must stop being tree
+# 1's either way (the tree label read below), and carried-child judges its volume against the uid
 # mid-run-child recorded.
 # The Sandboxes are read by the tree label, which the cleanup selects them by; the PVCs by issue,
 # since a claim carries no tree label (the volume is the issue's: its tree changes on re-admission
@@ -5306,16 +5519,21 @@ tree_label=$(op get sandbox "$child3_pod" -o jsonpath='{.metadata.labels.legion\
 [ "$tree_label" = "$child3" ] || fail "$child3's Sandbox $child3_pod carries tree label '$tree_label', want $child3"
 assert_one_bound_pvc "$child3" " in its own tree"
 child3_volume=$(op get pvc "${found%% *}" -o jsonpath='{.metadata.uid}') || fail "the operator could not read $child3's PVC ${found%% *}"
+# Child 3's hand-over is pending from tree 1's linger expiry until it is consumed, and its record
+# names its own tree after, so tree 1's cleanup always finds child 3 belonging to another tree and
+# hands its Sandbox over rather than deleting it (runtime/sandbox/cleanup.go handOverSandbox). The
+# planner must therefore come back on its kept session and volume; a fresh one means the cleanup
+# took the carried child's volume.
 case $came_back in
   fresh)
-    [ "$child3_volume" != "$child3_tree1_volume" ] ||
-      fail "$child3's planner came back as a fresh session, yet its PVC ${found%% *} is still uid $child3_volume, the volume it had in $tree1"
-    came_back_note="came back as a fresh session on a new volume (uid $child3_volume; the lost-volume lines of $child3's claims: $lost3)"
+    fail "$child3's planner came back as a fresh session on PVC uid $child3_volume (the lost-volume lines of $child3's claims: $lost3); want its kept session on uid $child3_tree1_volume, which tree 1's cleanup hands over rather than deletes"
     ;;
   kept)
     [ "$child3_volume" = "$child3_tree1_volume" ] ||
       fail "$child3's planner came back on its kept session, yet its PVC ${found%% *} is uid $child3_volume, not $child3_tree1_volume, the volume it had in $tree1"
-    came_back_note="came back on its kept session and volume (uid $child3_volume), its Sandbox relabelled for $child3 before tree 1's cleanup took it"
+    handed=$(log_lines "sandbox runtime: handed a carried issue's sandbox over to its new tree, keeping its volume" |
+      jq -c --arg sandbox "$child3_pod" 'select(.sandbox == $sandbox)' | grep -c . || true)
+    came_back_note="came back on its kept session and volume (uid $child3_volume), its Sandbox relabelled for $child3 by $([ "$handed" -ge 1 ] && echo "tree 1's cleanup" || echo "its own launch, before tree 1's cleanup")"
     ;;
 esac
 # Either way admission starts the planner in its new tree with its phase's resume task (admit's
