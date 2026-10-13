@@ -687,7 +687,7 @@ LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/sjawhar
 STAGE4B_UNTIL=<checkpoint> …                      # a development run: stops after that checkpoint, never PASS
 STAGE4B_DESIGN_GATE=root-issues STAGE4B_UNTIL=spec-posted …   # the design gate, armed, on tree 1 alone
 LEGION_E2E_PROJECT=S4B2 LEGION_E2E_DAEMON_PORT=13370 LEGION_E2E_WORKER_STREAM_PORT=13371 \
-  bash scripts/e2e/stage4b-sandbox-tree.sh        # a second lane beside a default-identity run; S4B2 must already exist as a Dispatch project
+  bash scripts/e2e/stage4b-sandbox-tree.sh        # a second lane beside a default-identity run; S4B2 is created if missing
 ```
 
 The repository names no production service. `LEGION_E2E_MODEL_GATEWAY_URL` is the model gateway's
@@ -823,9 +823,10 @@ devbox's admitted range ([Port admission](#port-admission)); the run's daemon ma
 its two takes the API and which the worker stream (`address-moved-stream-new-pod`), never a third.
 Left at their defaults, a run collides with another default run exactly as it always has; set all
 three to distinct values and two runs proceed at once, on the same devbox, against the
-same production cluster. `LEGION_E2E_PROJECT` must already exist as a Dispatch project: the run
-creates none, and production Dispatch has no auto-create (any person or agent session creates one,
-for example with `dispatch project --key <KEY> --name <name>`).
+same production cluster. `LEGION_E2E_PROJECT` need not already exist as a Dispatch project:
+`prerequisites` creates it before the lock when it is missing (`ensure_project`, `lib/workflow.sh`),
+a proof-human write like every other, over the agents' bearer and naming the proof human's session
+as its actor.
 - The run takes its own lock, derived from the project (above).
 - It owns its identity's shared objects only after four checks pass: that lock, both its ports
   free, no leftover `run_label` object in the namespace, and no `legion-go-<project>-` consumer on
@@ -950,7 +951,7 @@ event is dated by Dispatch's `created_at`; one without it stops the audit, never
 
 | checkpoint | what it holds |
 | :--- | :--- |
-| `prerequisites` | the tools, the restricted context and the image by digest; the devbox `gh` acts as the proof human, `sjawhar-agent[bot]`; the lock and the two ports; nothing left in the namespace (Sandboxes, pods, PVCs, ConfigMaps) or on NATS from another run; only then does the run own the shared objects |
+| `prerequisites` | the tools, the restricted context and the image by digest; the run's project exists in production Dispatch, created when missing (201, or 409 `PROJECT_EXISTS` when it already exists; any other answer fails the check); the devbox `gh` acts as the proof human, `sjawhar-agent[bot]`; the lock and the two ports; nothing left in the namespace (Sandboxes, pods, PVCs, ConfigMaps) or on NATS from another run; only then does the run own the shared objects |
 | `preflight` | the runtime identity is the daemon's restricted IAM role and cannot list Secrets; the Sandbox CRD and the `legion` NodePool's instance-cpu floor; the pool's room for the run's four pods at once (tree 1's root and its two children, tree 2's root), counted in pods of an issue pod's six-role reservation under the run's resources (`lib/stage4b-room.jq`): what each Ready, schedulable, undisrupted pool node has free beside every non-terminal pod on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for, below which the run ends BLOCKED `capacity: …`; whether the NodePool's instance-cpu and instance-memory bounds let two of the run's pods share a node, which decides what `issue-independence` asserts of their nodes; the run's Dispatch bearer reads `whoami` as an agent session, and an invalid bearer is refused 401; LEGSMOKE has no todo root; the stream carries both halves of intake; a throwaway pod on the Legion pool reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error |
 | `pod-watch` | the namespace snapshot; the pod, node-event and node-memory watches start, and the Secret-value check (`lib/secret-leaks.ts`). The pod and node-event watches last the whole run: kubectl's own watch ends when the API server closes it at its watch timeout, so each lists, watches from that resourceVersion, resumes from the last version it saw when a watch ends, and lists again on 410 Gone, noting each in the transcript. Each watch asks the server to end it within 300 s, so a loop a killed driver left stops within five minutes; a watch that delivered nothing is resumed after a pause, and a line that does not parse ends that watch unrecorded |
 | `boot` | the build's source is the one prerequisites recorded; `legion start --check-config` passes the `runtime: kubernetes` config, whose `pod` is the operator fixture's ([`deploy/kubernetes/operator-route`](../../deploy/kubernetes/operator-route/pod.yml)) with its ConfigMap renamed to the run's copy, whose `issue_volume` is 20Gi, and whose `resources` block overrides the tester's cpu, memory and ephemeral-storage limit (`ephemeral_storage: 30Gi`, its request the default 1Gi), the reviewer's cpu and memory and the merger's cpu alone, the rest the daemon's defaults, so a pod carries a reservation from each path the loader has, the disk bound's included; the operator creates that ConfigMap from the fixture's `models.yml` and `overlay.yml`; the audit window opens and the interest sampler starts; the daemon boots, and the image probe passes (its first attempt's timeline is kept) |
@@ -1740,12 +1741,16 @@ Stage 3 sources it after [`lib/rig.sh`](#librigsh).
 . "$root/scripts/e2e/lib/workflow.sh"     # sourced, never run
 ```
 
-The caller sets `work` (holding `dispatch-token`, `legion.yaml` and `operator-token`),
+The caller sets `work` (holding `legion`, `legion.yaml`, `dispatch-auth-header` and
+`dispatch-human-header`, the last two written by the caller or by `write_dispatch_header`),
 `evidence`, `project` (the Dispatch project; the daemon writes as `legion-daemon:<project>`),
-`repo`, `port_dispatch`, `port_daemon`, `pg_container` (the daemon's Postgres), and, once they
-exist, `pr_number` and `smoke_file` (the one product file the pull request's first implementation
-changed). It defines `note`, `pass` and `fail`, and the runtime seam, the only reads that depend on
-where an agent runs:
+`repo`, `dispatch_base`, `dispatch_actor` (the session every proof-human write names as its actor,
+or empty), `dispatch_token_file` (the file holding the agents' Dispatch bearer, which
+`write_dispatch_header` reads: Stage 4b's `LEGION_E2E_DISPATCH_TOKEN_FILE`), `pg_container` (the
+daemon's Postgres), and, once they exist, `pr_number` and `smoke_file` (the one product file the
+pull request's first implementation changed). It defines `note`, `pass` and `fail`, `scrub` (the
+filter that hides the run's private hosts in what it prints, which only a caller of
+`ensure_project` needs), and the runtime seam, the only reads that depend on where an agent runs:
 
 | seam | the caller's definition |
 | :--- | :--- |
@@ -1757,6 +1762,13 @@ where an agent runs:
 label `legion`, which hands it to the Go daemon (the daemon admits no root without it), and `SPEC`
 as its primary document, `smoke_spec` when `SPEC` is omitted. A child carries neither, since it runs
 under its root's tree.
+
+`write_dispatch_header` writes the two header files from `dispatch_token_file`; Stage 4b's
+`prerequisites` calls it first, before the lock, and `read_bearers` calls it again for the run
+proper. `ensure_project` creates `project` as a proof-human write, naming `dispatch_actor`: 201 and
+409 `PROJECT_EXISTS` both leave it ready, any other status fails the check naming the status and
+the body, and a failed connection fails it in one line naming curl's error.
+`lib/ensure-project.test.ts` drives both against a fake `curl`.
 
 `require_proof_human` is the proof human's precondition, which every stage proof that writes to
 GitHub as the proof human runs in `prerequisites` before its first `gh` call. It asks the devbox

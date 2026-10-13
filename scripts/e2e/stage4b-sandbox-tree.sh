@@ -71,9 +71,10 @@
 #   devbox against the same production cluster. A lane's two ports must be ones the devbox's
 #   security group admits from the Legion nodes (README's port-admission note states the current
 #   allocation and how many lanes it leaves room for); widening that admitted range is a change to
-#   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT must already exist
-#   as a Dispatch project: the run creates none, and production Dispatch has no auto-create (any
-#   person or agent session creates one, e.g. `dispatch project --key <KEY> --name <name>`).
+#   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT need not already
+#   exist as a Dispatch project: prerequisites creates it before the lock when it is missing
+#   (ensure_project, lib/workflow.sh), a proof-human write like every other, over the agents'
+#   bearer and naming the proof human's session as its actor.
 # - STAGE4B_UNTIL=<checkpoint> stops after that checkpoint. A run with it set is a development run,
 #   never the proof, and never prints PASS.
 # - STAGE4B_SKIP_CONTROLLER=1, in a development run only, runs none of `controller`'s checks and only
@@ -1042,11 +1043,9 @@ pod_endpoint_mismatch() {
 # ---- production access ---------------------------------------------------------------------------
 
 read_bearers() {
+  write_dispatch_header &&
   (umask 077 &&
-    tr -d '[:space:]' <"$dispatch_token_file" >"$work/dispatch-token" &&
     aws secretsmanager get-secret-value --secret-id "$envoy_token_secret_id" --query SecretString --output text >"$work/envoy-token" &&
-    printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
-    cp "$work/dispatch-auth-header" "$work/dispatch-human-header" &&
     printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
     head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
     head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
@@ -2461,6 +2460,10 @@ esac
 # The gateway's health endpoint is at its origin.
 gateway_origin=$(sed -E 's#^(https://[^/]+).*#\1#' <<<"$gateway")
 service_hosts=("${dispatch_base#https://}" "${envoy_url#*://}" "$nats_host" "${gateway_origin#https://}")
+# The run's project is created before the lock when it does not already exist, so a run never
+# takes the host lock for an identity Dispatch then refuses.
+write_dispatch_header
+ensure_project
 require_proof_human
 # The devbox's `gh` on PATH is a dotfiles wrapper acting as the proof human; it refuses an inherited
 # GH_TOKEN rather than passing it on, and in an agent session it replaces GH_CONFIG_DIR with its own
