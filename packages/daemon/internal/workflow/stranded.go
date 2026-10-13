@@ -41,9 +41,7 @@ const strandedRoleRunBatchSize = 200
 // itself, whatever task it kept: the stop timeout takes a confirmed task back for the resume, and
 // an unconfirmed phase task stays through the suspension (supervise's settle).
 //
-// The operator's resume (`legion claims resume`) brings back a suspended one. A failed one ignores
-// resume and deliver: only a workflow start retries it, its architect's retry of the held phase for
-// a worker and its tree's re-admission for an architect.
+// The move that brings each one back is api.StrandedClaim.Move's.
 //
 // It names no other claim: a worker whose phase is not its own is started again when its phase
 // comes, and a tree whose root holds no slot runs nothing yet. That is a lingering tree — a root

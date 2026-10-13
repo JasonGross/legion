@@ -213,6 +213,14 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // re-admitted after its linger stopped every claim.
 type RequestRetry struct{ Claim claim.Token }
 
+// RequestOperatorRetry is the operator relaunching a failed architect through the API: the retry
+// RequestRetry makes, fresh budgets and the same session, from failed alone, for the root and
+// sub-architects nothing else relaunches (operatorRetry). A retired claim belongs to its tree's
+// lifecycle, which the workflow decides, so the operator's retry refuses it, as it refuses every
+// claim that has not failed. It is its own event, as the closes are, so the table answers each
+// caller's retry its own way.
+type RequestOperatorRetry struct{ Claim claim.Token }
+
 // RequestDeliver gives the claim a task. ID is a durable outbox delivery id when an outbox row
 // drives the request; an empty ID asks the machine to mint an ordinary operator delivery id.
 //
@@ -260,6 +268,7 @@ func (RequestTreeClose) isEvent()     {}
 func (RequestIssueClose) isEvent()    {}
 func (RequestOperatorClose) isEvent() {}
 func (RequestRetry) isEvent()         {}
+func (RequestOperatorRetry) isEvent() {}
 func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
 
@@ -292,6 +301,7 @@ const (
 	onIssueClose    eventKind = "request_issue_close"
 	onOperatorClose eventKind = "request_operator_close"
 	onRetry         eventKind = "request_retry"
+	onOperatorRetry eventKind = "request_operator_retry"
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
 
@@ -347,6 +357,8 @@ func kindOf(ev Event) eventKind {
 		return onOperatorClose
 	case RequestRetry:
 		return onRetry
+	case RequestOperatorRetry:
+		return onOperatorRetry
 	case RequestDeliver:
 		return onDeliver
 	case RequestExit:
@@ -372,7 +384,7 @@ func requestName(ev Event) (string, bool) {
 		return "stop", true
 	case RequestTreeClose, RequestOperatorClose, RequestIssueClose:
 		return "close", true
-	case RequestRetry:
+	case RequestRetry, RequestOperatorRetry:
 		return "retry", true
 	case RequestDeliver:
 		return "deliver", true
@@ -600,6 +612,14 @@ func fillTable(t *builder) {
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
 	t.ignore(onRetry, "a suspended claim is resumed, not retried", StateSuspended)
+
+	t.row(onOperatorRetry, "the operator's retry of an architect: fresh budgets, and the same session relaunched", operatorRetry,
+		[]ClaimState{StateLaunching, StateFailed}, StateFailed)
+	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
+	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
+	t.ignore(onOperatorRetry, "the claim has not failed", live...)
+	t.ignore(onOperatorRetry, "a suspended claim is resumed, not retried", StateSuspended)
+	t.ignore(onOperatorRetry, "a retired claim runs again only when the workflow starts it", StateRetired)
 
 	t.row(onDeliver, "queue the task; it goes when the claim is next ready or idle", deliverLater, nil,
 		StateQueued, StateLaunching, StateShimConnected, StateRegistered, StateWorking)
@@ -1063,6 +1083,24 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 func retry(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.Budgets = Budgets{}
 	return m.revive(ctx)
+}
+
+// operatorRetry is the operator's retry of a failed claim: retry, for an architect, whether its
+// tree's root or a sub-architect, which nothing else relaunches. Any other claim has a retry of its
+// own, so it is refused, naming that retry: a phase worker's is its architect's retry_or_escalate
+// while its issue is held and the next start of its role otherwise, and the daemon's controller's is
+// its keeper. A claim's role never changes, so the refusal cannot race the decision it guards.
+func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
+	switch m.claim.Role {
+	case claim.RoleArchitect:
+		return retry(m, ctx, ev)
+	case claim.RoleController:
+		return &RefusedError{State: m.claim.State, Request: "retry",
+			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryArchitectOnly)}
+	default:
+		return &RefusedError{State: m.claim.State, Request: "retry",
+			Err: fmt.Errorf("%w; a phase worker is retried by its architect's retry_or_escalate while its issue is held, and by the next start of its role otherwise", ErrRetryArchitectOnly)}
+	}
 }
 
 // stop ends one claim: the runtime releases it, and it retires. A release that fails changes
