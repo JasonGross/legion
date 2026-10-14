@@ -2199,6 +2199,35 @@ do not stop every program the shared clone's own git or jj configuration can nam
 what they leave open: a tree-written `http.proxy` with `http.sslVerify=false` still sees the token
 on its way to github.com.
 
+### The daemon's Kubernetes request rate
+
+The runtime's clients share one client-side rate limiter, 50 requests a second with a burst of 100
+(`clientQPS`, `clientBurst` in `internal/runtime/sandbox/clients.go`), over every Sandbox, pod,
+event and Secret request it makes; a watch is never paced. Each boot check (the Agent Sandbox
+install check and the layout census) runs before the runtime exists and paces itself at the same
+rate. The rate is sized for a few hundred roles. A restart has every live role's launcher say hello
+again, and each hello reads its role's `-boot` Secret: at 50 a second three hundred launchers'
+reads clear in about 4 s. A launch, about eight requests into a running pod and about thirty when
+it replaces the pod, waits a fraction of a second more for each launch ahead of it.
+
+A request waits on the limiter as long as its caller allows, a launch as long as the launch's own
+deadlines allow, and only then does its own 30 s bound start: client-go starts a client's timeout
+after its wait on the limiter (`rest/request.go`), and the runtime's informers use clients of their
+own with no timeout, since one would end a watch. A launch the limiter holds back waits its turn
+and is charged no launch failure. A pod log read is the exception: it is bounded whole at 30 s,
+its wait on the limiter included, since client-go bounds a log stream per attempt and not across
+its retries.
+
+A role's launcher credential is read once however often its launcher says hello. The read is
+single-flight per Secret of a Sandbox and outlives the hello that began it: the hello waits for it
+up to 30 s and is then refused, and the launcher's next hello, a second later, joins the same read
+or finds what it stored. A read that fails is logged (`sandbox runtime: a launcher Secret could not
+be read; …`, naming the Secret and the error) and is not repeated for that Sandbox for 10 s; a
+hello meanwhile is refused without a request, so three hundred launchers whose reads fail ask for
+at most thirty a second. A launch into a kept pod reads its roles' Secrets to check their binding,
+and holds each bound one, so its launcher is not refused for an earlier failed read. The daemon
+reads each Secret by name because its RBAC grants `get` and never `list` on Secrets (next section).
+
 ### RBAC the Go daemon needs
 
 The daemon runs as a restricted identity (in production, an IAM role mapped to the `legion-daemon`
