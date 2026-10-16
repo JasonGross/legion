@@ -4,6 +4,22 @@
 
 ### Added
 
+- `ENVOY_NATS_SOCKS5_PROXY` sends every NATS connection of the bus through a SOCKS5 proxy, as
+  `host:port`: the first, nats.go's reconnects in place, and the replacement a client's recovery
+  dials, for `envoy-listener`, `envoy-dispatch` (a row of its settings table), `natstail` and the
+  MCP bridge. The proxy is handed each server's host name as the URL spells it, unresolved, so a
+  proxy that resolves names this process cannot (a userspace Tailscale container's SOCKS5 server
+  and MagicDNS) reaches them. A value that is not `host:port` (whitespace around it, a scheme, an
+  IPv6 address with a zone, a host that is neither an IP address nor a DNS name, a port outside
+  1-65535, or empty) is refused before anything dials, and so is one that holds an nkey seed as
+  `bus.HoldsSeed` finds one (the value, its host, a label or part of one, or split across labels by
+  `.`, `-` or `_`, in either case), which is a valid DNS label but never a proxy address. A set
+  proxy is remote reach, refused without `ENVOY_ALLOW_REMOTE_NATS=1`, since
+  the proxy chooses the server. No refusal prints the value. A connect through the proxy that
+  fails, its attempts spent or its deadline reached, names the setting and the proxy's address,
+  with the proxy's own dial error where nats.go alone would report only `nats: no servers
+  available for connection`, and a proxied dial ends at a connect's deadline as a direct one does.
+  Unset, the bus dials NATS directly, as before.
 - Dispatch signs people in with Google directly for one Google Workspace domain, with no Cognito
   sign-in pool and no AWS account: `DISPATCH_SIGNIN_DOMAIN` takes the place of
   `DISPATCH_SIGNIN_GROUP` beside the issuer, client ID and client secret, under the issuer
