@@ -2530,14 +2530,20 @@ issue's pod (every role container of it alike) and the image probe's.
 - **Each role's model** is the operator's: the `models.yml` and `overlay.yml` they keep in a
   directory of their own (for example `~/.local/state/legion-model-config`), which
   `deploy/kubernetes/operator-route/apply.sh --context <kube context> <directory>` writes into the
-  ConfigMap `legion-operator-route` in namespace `legion`, its only writer. To change a role's
-  model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
-  Pods started after that use it; a running pod keeps the files it started with until it restarts,
-  since both are mounted by `subPath`, which the kubelet never refreshes. The example overlay also
-  turns `retry.modelFallback` on (LEGION-578's ruling: a failed model call is retried on another
-  model; which model is the repository's `retry.fallbackChains` to name): the probe pod reads the
-  effective value under the operator's configuration (`omp config get retry.modelFallback`) onto its
-  OK line's `model-fallback` mark (`unread` when it could not read it: the probe pod's log says
+  ConfigMap `legion-operator-route` in namespace `legion`, with a server-side apply under its own
+  field manager that forces conflicts: it takes the two keys over from any tool that wrote them
+  before and names that tool's field manager on stderr. A tool that still declares the ConfigMap
+  acts at its own next apply: a forced one writes its copy back, and one without force fails on any
+  key whose value differs and leaves the operator's copy; either way, stop it declaring the
+  ConfigMap first.
+  To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same
+  command again. Pods started after that use it; a running pod keeps the files it started with until
+  it restarts, since both are mounted by `subPath`, which the kubelet never refreshes. The example
+  overlay also turns `retry.modelFallback` on (LEGION-578's ruling: a failed model call is retried
+  on another model; which model is the repository's `retry.fallbackChains` to name): the probe pod
+  reads the effective value under the operator's configuration
+  (`omp config get retry.modelFallback`) onto its OK line's `model-fallback` mark (`unread` when it
+  could not read it: the probe pod's log says
   why), and the daemon reports the `model-fallback` capability open while a deployment's copy
   turns it off or the probe could not read it — a report, not a refusal; a
   `capabilities.decided.model-fallback: "<reason>"` line in `legion.yaml` records a decision to
