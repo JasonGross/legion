@@ -7,6 +7,20 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
 
 ### Added
 
+- Daemon API contract 29 and plugin interface version 3 (sjawhar/legion#1998): the daemon-launched
+  controller is told the project's Slack channels as `LEGION_SLACK_CHANNELS`, always set (empty for
+  none), and the plugin subscribes to each channel's mention topic while the session holds the
+  controller role, registering none with the listener. A resume first drops, from the listener and
+  from what it restores, every Slack topic an earlier session registered, a listed channel's
+  included, since a restored one would outlive the role; it hears the channels its launch names
+  and no others. A daemon restarted with a changed `slack_channels` relaunches the controller,
+  resuming its session, since the list is one of the addresses its generation records. Any other
+  controller ignores the variable. The controller skill answers each mention in its thread with
+  `slack_post` (`references/slack-mentions.md`). Under `runtime.kubernetes.agent_secrets` the
+  controller's pod is enrolled with the secrets broker. Install this release's pair with a daemon
+  at 29.
+- The `dispatch-envoy-tools` capability row expects `slack_post` among the Envoy tools, eleven in
+  all.
 - Every root architect's and phase worker's session measures six live capabilities as it boots
   and reports them with `POST /legion/v1/claims/ready` (`capabilities`, contract 21, LEGION-663),
   which the daemon renders in `legion state`: `subagents` (`pi.agents` exposed, `task` registered,
@@ -16,7 +30,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   connected — the check connects a second, short-lived client per configured server and
   disconnects it, since the session's own are the host's), `repository-extensions` (every
   `.omp/extensions/` module, `.omp/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` the
-  workspace carries is among what Oh My Pi discovers), `dispatch-envoy-tools` (the ten Envoy tools
+  workspace carries is among what Oh My Pi discovers), `dispatch-envoy-tools` (the Envoy tools
   registered and `dispatch read --issue <issue>` answering) and `github` (the role's App login
   through `gh api graphql {viewer{login}}`, since an App installation token may not call REST
   `GET /user`). The six checks run concurrently, each within 8 s and the whole report within 10 s;
@@ -45,6 +59,12 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
 
 ### Changed
 
+- The daemon refuses, at load and under `--check-config`, a `runtime.kubernetes.pod.env`
+  `DISPATCH_PUBLIC_URL` outside a rule narrower than the agents' URL parser (http or https, no
+  userinfo, a host that is a plain DNS name, a dotted-quad IPv4 or a bracketed IPv6 address, a
+  port from 1 to 65535), naming it, so a value it accepts never turns Dispatch off in an agent.
+- The controller skill's Slack replies give the link and assignee `dispatch` printed, never an
+  assumed one.
 - The `legion-worker` and `legion-architect` skills say how the daemon's submission of an accepted
   READY's merge ends when someone removes what it armed (LEGION-800). Once the daemon has seen
   READY's head in the merge queue or armed for auto-merge, it never submits that head again after a
