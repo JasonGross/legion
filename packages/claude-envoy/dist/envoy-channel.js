@@ -43187,7 +43187,9 @@ var TMUX_PANE_FORMAT = [
   "#{session_windows}",
   "#{window_index}",
   "#{window_name}",
-  "#{automatic-rename}"
+  "#{automatic-rename}",
+  "#{window_panes}",
+  "#{pane_index}"
 ].join("\t");
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
@@ -43206,17 +43208,16 @@ function queryTmux(pane, format) {
     return;
   }
 }
-function tmuxPaneTitle(pane, query = queryTmux) {
+function tmuxPaneTitle(pane, project, query = queryTmux) {
   const fields = query(pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
   if (fields === undefined || fields.length < 5)
     return;
-  const [session = "", windows, index = "", window2 = "", automaticRename] = fields.map(oneLine);
+  const [session = "", windows, index = "", window2 = "", automaticRename, panes, paneIndex = ""] = fields.map(oneLine);
   if (session === "")
     return;
-  if (window2 !== "" && (automaticRename === "0" || automaticRename === "off")) {
-    return `${session}:${window2}`;
-  }
-  return windows === "1" || index === "" ? session : `${session}:${index}`;
+  const named = /^[0-9]+$/.test(session) ? `${project} ${session}` : session;
+  const base = window2 !== "" && (automaticRename === "0" || automaticRename === "off") ? `${named}:${window2}` : windows === "1" || index === "" ? named : `${named}:${index}`;
+  return panes !== undefined && panes !== "1" && paneIndex !== "" ? `${base}.${paneIndex}` : base;
 }
 function sessionTitle(environment, directory, query = queryTmux) {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
@@ -43224,11 +43225,11 @@ function sessionTitle(environment, directory, query = queryTmux) {
     const title = oneLine(explicit);
     return () => title;
   }
+  const project = basename(directory) || directory;
   const pane = configuredValue(environment.TMUX_PANE);
-  const tmux = pane === undefined ? undefined : tmuxPaneTitle(pane.trim(), query);
+  const tmux = pane === undefined ? undefined : tmuxPaneTitle(pane.trim(), project, query);
   if (tmux !== undefined)
     return () => tmux;
-  const project = basename(directory) || directory;
   return (sessionId) => `${project} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
 

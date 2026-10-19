@@ -35,17 +35,45 @@ test("a blank ENVOY_SESSION_TITLE falls through to tmux", () => {
 })
 
 test("inside tmux a window someone named reads as session:window", () => {
-  expect(tmuxPaneTitle("%3", tmuxAnswering("work", "3", "1", "review", "0"))).toBe("work:review")
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("work", "3", "1", "review", "0"))).toBe(
+    "work:review",
+  )
   // A tmux that prints the flag as on/off rather than 1/0.
-  expect(tmuxPaneTitle("%3", tmuxAnswering("work", "3", "1", "review", "off"))).toBe("work:review")
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("work", "3", "1", "review", "off"))).toBe(
+    "work:review",
+  )
 })
 
 test("inside tmux an automatically named window reads as the session, with its index when the session has more", () => {
   // automatic-rename names the window after the running command, which is the same in every pane.
-  expect(tmuxPaneTitle("%3", tmuxAnswering("work", "1", "0", "claude", "1"))).toBe("work")
-  expect(tmuxPaneTitle("%3", tmuxAnswering("work", "4", "2", "claude", "1"))).toBe("work:2")
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("work", "1", "0", "claude", "1"))).toBe("work")
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("work", "4", "2", "claude", "1"))).toBe(
+    "work:2",
+  )
   // A tmux too old to expand option names leaves the flag empty: the window's name is not trusted.
-  expect(tmuxPaneTitle("%3", tmuxAnswering("work", "4", "2", "claude", ""))).toBe("work:2")
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("work", "4", "2", "claude", ""))).toBe(
+    "work:2",
+  )
+})
+
+test("a session tmux numbered itself is named after the project", () => {
+  // Plain `tmux` names its first session `0`, which on every machine says nothing.
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("0", "1", "0", "claude", "1"))).toBe(
+    "legion 0",
+  )
+  expect(tmuxPaneTitle("%3", "legion", tmuxAnswering("1", "2", "1", "claude", "1"))).toBe(
+    "legion 1:1",
+  )
+})
+
+test("a split window names the pane, so two sessions in one window differ", () => {
+  const split = (index: string) =>
+    tmuxPaneTitle("%3", "legion", tmuxAnswering("split", "1", "0", "pair", "0", "2", index))
+  expect(split("0")).toBe("split:pair.0")
+  expect(split("1")).toBe("split:pair.1")
+  expect(
+    tmuxPaneTitle("%3", "legion", tmuxAnswering("split", "1", "0", "pair", "0", "1", "0")),
+  ).toBe("split:pair")
 })
 
 test("outside tmux, or when tmux cannot answer, the title is the project directory and the short id", () => {
