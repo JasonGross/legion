@@ -50,6 +50,7 @@ import {
   secondaryButtonText,
   textMutedHoverToSecondary,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
@@ -93,10 +94,13 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 
 const INACTIVE_AFTER_MS = 10 * 60_000;
 
-/** The composer's one notice slot: the recipient limit or the exclusions, one at
- *  a time. In the compact grid it is one line that scrolls sideways like the chips: between the
- *  mode and Send on a narrow screen, adding no height, and the third and last row on a short one. */
-const composerLine = `mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1 ${dangerText}`;
+/** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
+ *  sends in, one at a time. In the compact grid it is one line that scrolls sideways like the
+ *  chips: between the mode and Send on a narrow screen, adding no height, and the third and last
+ *  row on a short one. A refusal or an exclusion reads as a warning; the mode alone does not. */
+const composerLineLayout =
+  "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
+const composerLine = `${composerLineLayout} ${dangerText}`;
 
 /** The grey-dot rule: a session unseen for ten minutes folds under `Inactive (N)`. */
 function isInactive(agent: Agent, now: number): boolean {
@@ -1071,18 +1075,17 @@ function BroadcastComposer({
         rows={3}
         value={body}
       />
-      {asideOnly.length > 0 ? (
-        <p className={composerLine}>
+      {sendState.notice !== null ? (
+        <p className={composerLine} id={noticeId}>
+          {sendState.notice}
+        </p>
+      ) : asideOnly.length > 0 ? (
+        <p className={`${composerLineLayout} ${textMutedOnSurface}`}>
           Sending as Aside:{" "}
           {asideOnly.map((agent) => sessionLabel(agent.session_id, agent.title)).join(" and ")}{" "}
           {asideOnly.length > 1 ? "do" : "does"} not advertise BTW.
         </p>
       ) : null}
-      {sendState.notice === null ? null : (
-        <p className={composerLine} id={noticeId}>
-          {sendState.notice}
-        </p>
-      )}
       <RefusableButton
         className="mt-2 narrow-or-short:order-2 narrow-or-short:col-start-3 narrow-or-short:mt-0 narrow-or-short:justify-self-end short:col-start-4"
         describedBy={sendState.notice === null || sendState.refusalOnNotice ? undefined : noticeId}
