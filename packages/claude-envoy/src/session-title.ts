@@ -23,13 +23,15 @@ export type TmuxQuery = (socket: string, pane: string, format: string) => string
 // sessions apart no better than nothing, so only a window with it off lends its name. A window
 // index is never used: with `renumber-windows` on, tmux moves it after the title is worked out.
 // A pane of grouped sessions answers with whichever session of the group tmux picks, so the
-// group's name stands in for it: the name of the session the group was made from, which tmux
-// keeps even after that session is renamed or ends.
+// group's name stands in for it, which tmux keeps even after the sessions are renamed or end.
+// `pid` is the server's: a pane id names a pane only on the server that gave it out, and a server
+// started again on the same socket gives out the same ids.
 const TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
   "#{automatic-rename}",
   "#{session_group}",
+  "#{pid}",
 ].join("\t")
 
 /** Bounds the one tmux call the server makes as it starts. */
@@ -67,21 +69,24 @@ export function queryTmux(socket: string, pane: string, format: string): string 
 }
 
 /**
- * The tmux name of `pane` on the server at `socket`: `session:window` for a window whose
- * `automatic-rename` is off, else the tmux session's name. Undefined when tmux cannot say, and
- * for a session named only by digits (plain `tmux` names its first one `0`) in a window nobody
- * named, since that says nothing on any machine.
+ * The tmux name of `pane` on the server at `socket` whose process is `serverPid`: `session:window`
+ * for a window whose `automatic-rename` is off, else the tmux session's name. Undefined when tmux
+ * cannot say, when another server now answers on that socket, and for a session named only by
+ * digits (plain `tmux` names its first one `0`) in a window nobody named, since that says nothing
+ * on any machine.
  */
 export function tmuxPaneTitle(
   socket: string,
+  serverPid: string,
   pane: string,
   query: TmuxQuery = queryTmux,
 ): string | undefined {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)
     ?.replace(/\r?\n$/, "")
     .split("\t")
-  if (fields === undefined || fields.length < 3) return undefined
-  const [name = "", window = "", automaticRename, group = ""] = fields.map(oneLine)
+  if (fields === undefined || fields.length < 5) return undefined
+  const [name = "", window = "", automaticRename, group = "", pid] = fields.map(oneLine)
+  if (pid !== serverPid) return undefined
   const session = group === "" ? name : group
   // A tmux too old to expand a format prints it as it was sent.
   if (session === "" || session.startsWith("#{")) return undefined
@@ -105,18 +110,20 @@ export function sessionTitle(
   query: TmuxQuery = queryTmux,
 ): SessionTitle {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE)
-  if (explicit !== undefined) {
+  // A title of only invisible characters (a zero-width space) would show as a blank row.
+  if (explicit !== undefined && explicit.replace(/[\s\p{Cf}]/gu, "") !== "") {
     const title = oneLine(explicit)
     return () => title
   }
-  // `TMUX` is `<socket>,<server pid>,<session>`; a pane id names a pane only on its own server.
-  // The socket is everything before the last two commas, since a path may hold a comma.
-  const socket = configuredValue(environment.TMUX)?.split(",").slice(0, -2).join(",")
+  // `TMUX` is `<socket>,<server pid>,<session>`, and a socket path may hold a comma.
+  const parts = configuredValue(environment.TMUX)?.split(",") ?? []
+  const socket = parts.slice(0, -2).join(",")
+  const serverPid = parts.at(-2) ?? ""
   const pane = configuredValue(environment.TMUX_PANE)?.trim()
   const name =
-    (socket === undefined || socket === "" || pane === undefined
+    (socket === "" || serverPid === "" || pane === undefined
       ? undefined
-      : tmuxPaneTitle(socket, pane, query)) ??
+      : tmuxPaneTitle(socket, serverPid, pane, query)) ??
     (basename(directory) || directory)
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`
 }

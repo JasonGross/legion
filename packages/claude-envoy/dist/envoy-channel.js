@@ -43186,7 +43186,8 @@ var TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
   "#{automatic-rename}",
-  "#{session_group}"
+  "#{session_group}",
+  "#{pid}"
 ].join("\t");
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
@@ -43206,11 +43207,13 @@ function queryTmux(socket, pane, format) {
     return;
   }
 }
-function tmuxPaneTitle(socket, pane, query = queryTmux) {
+function tmuxPaneTitle(socket, serverPid, pane, query = queryTmux) {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
-  if (fields === undefined || fields.length < 3)
+  if (fields === undefined || fields.length < 5)
     return;
-  const [name = "", window2 = "", automaticRename, group = ""] = fields.map(oneLine);
+  const [name = "", window2 = "", automaticRename, group = "", pid] = fields.map(oneLine);
+  if (pid !== serverPid)
+    return;
   const session = group === "" ? name : group;
   if (session === "" || session.startsWith("#{"))
     return;
@@ -43221,13 +43224,15 @@ function tmuxPaneTitle(socket, pane, query = queryTmux) {
 }
 function sessionTitle(environment, directory, query = queryTmux) {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
-  if (explicit !== undefined) {
+  if (explicit !== undefined && explicit.replace(/[\s\p{Cf}]/gu, "") !== "") {
     const title = oneLine(explicit);
     return () => title;
   }
-  const socket = configuredValue(environment.TMUX)?.split(",").slice(0, -2).join(",");
+  const parts = configuredValue(environment.TMUX)?.split(",") ?? [];
+  const socket = parts.slice(0, -2).join(",");
+  const serverPid = parts.at(-2) ?? "";
   const pane = configuredValue(environment.TMUX_PANE)?.trim();
-  const name = (socket === undefined || socket === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, pane, query)) ?? (basename(directory) || directory);
+  const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, query)) ?? (basename(directory) || directory);
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
 
