@@ -951,6 +951,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         title: sessionTitle(
           {
             ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+            TMUX: process.env["TMUX"],
             TMUX_PANE: process.env["TMUX_PANE"],
           },
           directory,

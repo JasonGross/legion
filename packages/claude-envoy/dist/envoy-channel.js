@@ -43182,42 +43182,31 @@ async function serveEnvoyOff(serverInfo, refusal) {
 // src/session-title.ts
 import { execFileSync } from "child_process";
 import { basename } from "path";
-var TMUX_PANE_FORMAT = [
-  "#{session_name}",
-  "#{session_windows}",
-  "#{window_index}",
-  "#{window_name}",
-  "#{automatic-rename}",
-  "#{window_panes}",
-  "#{pane_index}"
-].join("\t");
+var TMUX_PANE_FORMAT = ["#{session_name}", "#{window_name}", "#{automatic-rename}"].join("\t");
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
 function oneLine(value) {
   return value.replace(/\s+/g, " ").trim();
 }
-function queryTmux(pane, format) {
+function queryTmux(socket, pane, format) {
   try {
-    const answer = execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: TMUX_TIMEOUT_MS
-    });
+    const answer = execFileSync("tmux", ["-S", socket, "display-message", "-p", "-t", pane, format], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: TMUX_TIMEOUT_MS });
     return answer.trim() === "" ? undefined : answer;
   } catch {
     return;
   }
 }
-function tmuxPaneTitle(pane, project, query = queryTmux) {
-  const fields = query(pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
-  if (fields === undefined || fields.length < 5)
+function tmuxPaneTitle(socket, pane, query = queryTmux) {
+  const fields = query(socket, pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
+  if (fields === undefined || fields.length < 3)
     return;
-  const [session = "", windows, index = "", window2 = "", automaticRename, panes, paneIndex = ""] = fields.map(oneLine);
+  const [session = "", window2 = "", automaticRename] = fields.map(oneLine);
   if (session === "")
     return;
-  const named = /^[0-9]+$/.test(session) ? `${project} ${session}` : session;
-  const base = window2 !== "" && (automaticRename === "0" || automaticRename === "off") ? `${named}:${window2}` : windows === "1" || index === "" ? named : `${named}:${index}`;
-  return panes !== undefined && panes !== "1" && paneIndex !== "" ? `${base}.${paneIndex}` : base;
+  if (window2 !== "" && (automaticRename === "0" || automaticRename === "off")) {
+    return `${session}:${window2}`;
+  }
+  return /^[0-9]+$/.test(session) ? undefined : session;
 }
 function sessionTitle(environment, directory, query = queryTmux) {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
@@ -43225,12 +43214,10 @@ function sessionTitle(environment, directory, query = queryTmux) {
     const title = oneLine(explicit);
     return () => title;
   }
-  const project = basename(directory) || directory;
-  const pane = configuredValue(environment.TMUX_PANE);
-  const tmux = pane === undefined ? undefined : tmuxPaneTitle(pane.trim(), project, query);
-  if (tmux !== undefined)
-    return () => tmux;
-  return (sessionId) => `${project} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
+  const socket = configuredValue(environment.TMUX)?.split(",")[0];
+  const pane = configuredValue(environment.TMUX_PANE)?.trim();
+  const name = (socket === undefined || socket === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, pane, query)) ?? (basename(directory) || directory);
+  return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
 
 // src/envoy-channel-server.ts
@@ -43814,6 +43801,7 @@ async function runEnvoyChannelServer() {
         stateDirectory,
         title: sessionTitle({
           ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+          TMUX: process.env["TMUX"],
           TMUX_PANE: process.env["TMUX_PANE"]
         }, directory),
         ...configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}
