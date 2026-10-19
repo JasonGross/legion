@@ -54,7 +54,7 @@ export function queryTmux(socket: string, pane: string, format: string): string 
 /**
  * The tmux name of `pane` on the server at `socket`: `session:window` for a window whose
  * `automatic-rename` is off, else the tmux session's name. Undefined when tmux cannot say, and
- * for a session tmux numbered itself (plain `tmux` names its first one `0`) in a window nobody
+ * for a session named only by digits (plain `tmux` names its first one `0`) in a window nobody
  * named, since that says nothing on any machine.
  */
 export function tmuxPaneTitle(

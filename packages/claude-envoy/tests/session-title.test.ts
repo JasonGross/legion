@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
@@ -49,6 +49,7 @@ test("the socket is TMUX up to its last two commas, so a path holding a comma st
   sessionTitle({ TMUX: "/tmp/a,b/default,4242,0", TMUX_PANE: "%3" }, "/work/legion", tmux)
   expect(tmux.asked).toEqual([["/tmp/a,b/default", "%3"]])
 })
+
 test("a window whose automatic-rename is off lends its name", () => {
   expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work", "review", "0"))).toBe("work:review")
   // A tmux that prints the flag as on/off rather than 1/0.
@@ -115,12 +116,14 @@ test("the short id follows the id it is given, so a /clear handoff's new id show
 test("queryTmux answers undefined for a server that does not exist and for a pane it does not have", () => {
   expect(queryTmux("/nonexistent/tmux.sock", "%0", "#{session_name}")).toBeUndefined()
   // A running server answers a pane it does not have with an empty line and exit status 0.
-  const socket = join(mkdtempSync(join(tmpdir(), "title-tmux-")), "tmux.sock")
+  const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+  const socket = join(directory, "tmux.sock")
   execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "probe"])
   try {
     expect(queryTmux(socket, "%999999999", "#{session_name}")).toBeUndefined()
     expect(queryTmux(socket, "probe:", "#{session_name}")).toBe("probe\n")
   } finally {
     execFileSync("tmux", ["-S", socket, "kill-server"])
+    rmSync(directory, { recursive: true, force: true })
   }
 })

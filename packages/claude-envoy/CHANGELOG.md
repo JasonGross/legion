@@ -14,7 +14,7 @@
   showing its session id: `ENVOY_SESSION_TITLE`; else a name and the session id's first eight
   characters, the name being the pane's tmux name inside tmux (`session:window` for a window whose
   `automatic-rename` is off, else the session) and the project directory's name otherwise or for a
-  session tmux numbered itself. It registered an empty title.
+  session named only by digits (plain `tmux` names its first one `0`). It registered an empty title.
 - The MCP server lists `slack_post` beside the ten `envoy_*` tools (sjawhar/legion#1998), a reply
   in a Slack thread with the bot token the secrets broker grants (`LEGION_SLACK_BOT_TOKEN`).
 
