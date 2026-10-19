@@ -63,9 +63,17 @@ How a message reaches the agent depends on its mode:
 | **Aside** | Picks it up at its next step. |
 | **BTW** | Answers it in a side turn, without adding it to its main conversation, and the answer is posted back as its reply. |
 
-A message is a Send unless you start it with `/aside ` or `/btw `. Each session takes only the
-modes it advertises. A Claude Code session, for example, takes Aside but not Send. If you write in a
-mode the session does not take, the message box warns you and suggests a prefix it does take.
+A message is a Send unless you start it with `/aside ` or `/btw `, or the session does not take
+Send. Each session takes only the modes it advertises. A Claude Code session, for example, takes
+Aside but not Send, so a message you write to it without a prefix goes as an Aside, and the message
+box says "Sending as Aside". If you write in a mode the session does not take, the message box warns
+you and suggests a prefix it does take.
+
+A session that advertises no mode takes no message: its card says **Takes no messages**, and a
+message sent to it is recorded as a failed attempt. A Claude Code session advertises none when it
+was started without its Envoy channel (`claude --channels plugin:claude-envoy@legion-plugins`, or
+`--dangerously-load-development-channels` with the same entry where the channel is not
+allowlisted); Claude Code would not show it the message.
 
 On an Oh My Pi session, your Send or Aside arrives as your own message in its conversation, and the
 agent answers there. A Send or Aside that starts with `/` runs as the session's terminal would run

@@ -241,6 +241,40 @@ test("Agents lists live session activity and capability-aware actions", async ()
   }
 });
 
+// A Claude Code session takes Aside but not Send: the card's plain message goes as an Aside and
+// says so, rather than warning that the Send it would have been records a failed attempt. A
+// session that advertises no mode at all says on its card that it takes no messages.
+test("an agent card sends a plain message in the mode the session takes", async () => {
+  const deaf = { ...agents[1], capabilities: [], session_id: "deaf-session", title: "Deaf" };
+  const page = renderAgents({ listedAgents: [...agents, deaf] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const reviewer = card(region, "Reviewer");
+    expand(reviewer, "Reviewer");
+    fireEvent.change(within(reviewer).getByRole("textbox", { name: "Comment" }), {
+      target: { value: "Is the review done?" },
+    });
+    expect(
+      within(reviewer).getByText("Sending as Aside: Reviewer does not advertise Send.")
+    ).toBeTruthy();
+    fireEvent.submit(within(reviewer).getByRole("form", { name: "Comment composer" }));
+    await waitFor(() =>
+      expect(page.createAgentMessage).toHaveBeenCalledWith("reviewer-session", {
+        body: "Is the review done?",
+        delivery: "aside",
+      })
+    );
+
+    const silent = card(region, "Deaf");
+    expand(silent, "Deaf");
+    expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("Agents collapses every card by default and expands each one independently", async () => {
   const page = renderAgents();
 
@@ -791,9 +825,10 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     });
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
+      // Planner takes Aside and BTW but not Send, so the plain message is an Aside.
       expect(page.createComment).toHaveBeenCalledWith("CORE-1", {
         body: "@Planner Track this under Core",
-        delivery: "steer",
+        delivery: "aside",
         mentions: [{ target: "session:planner-session" }],
       })
     );
@@ -1479,6 +1514,49 @@ test("an exchange answered within the Clear's millisecond but after it stays vis
     });
     await expect(within(conversation).findByText("Answer after the Clear")).resolves.toBeTruthy();
     expect(within(planner).queryByText("Cleared question")).toBeNull();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A Claude Code session takes Aside alone: a reply into an exchange whose last attempt was a
+// Send it refused goes as an Aside, not as a BTW it refuses too.
+test("a reply to an Aside-only agent after a refused Send goes as an Aside", async () => {
+  const root = message("Can this ship?", {
+    deliveries: [
+      {
+        attempt: 1,
+        created_at: recentAttemptAt,
+        delivery: "steer",
+        envelope_id: null,
+        error: "session reviewer-session () does not advertise steer",
+        message_id: "message-1",
+        reply_id: null,
+        session_id: "reviewer-session",
+        state: "failed",
+      },
+    ],
+    target: "session:reviewer-session",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [] }] });
+
+  try {
+    const reviewer = card(await screen.findByRole("region", { name: "Agents" }), "Reviewer");
+    expand(reviewer, "Reviewer");
+    await within(reviewer).findByText("Can this ship?");
+    fireEvent.click(within(reviewer).getByRole("button", { name: "Reply" }));
+    fireEvent.change(within(reviewer).getByRole("textbox", { name: "Comment" }), {
+      target: { value: "Can this ship now?" },
+    });
+    fireEvent.submit(within(reviewer).getByRole("form", { name: "Comment composer" }));
+    await waitFor(() =>
+      expect(page.createAgentMessage).toHaveBeenCalledWith("reviewer-session", {
+        body: "Can this ship now?",
+        delivery: "aside",
+        in_reply_to: "message-1",
+      })
+    );
   } finally {
     page.view.unmount();
     page.restore();

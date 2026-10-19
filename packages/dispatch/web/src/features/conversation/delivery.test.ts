@@ -5,6 +5,7 @@ import {
   type DeliveryOutcome,
   duplicateText,
   isSafeRetry,
+  plainDelivery,
   receiptAnsweredWithError,
   rowAnsweredWithError,
   safeRetryGuidance,
@@ -139,4 +140,18 @@ test("every single-delivery promise names the restart it does not survive", () =
   ]) {
     expect(promise).toContain("unless the session restarted since it was sent");
   }
+});
+
+test("a plain message is a Send unless every addressed session takes Aside and one refuses Send", () => {
+  const omp = ["aside", "btw", "steer"];
+  const claude = ["aside"];
+  expect(plainDelivery([])).toBe("steer");
+  expect(plainDelivery([omp])).toBe("steer");
+  expect(plainDelivery([claude])).toBe("aside");
+  expect(plainDelivery([omp, claude])).toBe("aside");
+  // BTW is never picked for the reader, and a session with no mode takes none, so it decides
+  // nothing for the rest; alone, it leaves Send to be warned about.
+  expect(plainDelivery([["btw"]])).toBe("steer");
+  expect(plainDelivery([claude, []])).toBe("aside");
+  expect(plainDelivery([[]])).toBe("steer");
 });

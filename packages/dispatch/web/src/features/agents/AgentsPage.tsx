@@ -55,7 +55,7 @@ import {
 } from "../../theme/classes";
 import { resolveAuthor } from "../conversation/authors";
 import type { ReplyTarget } from "../conversation/composer-model";
-import { capabilityLabel, MODE_LABELS } from "../conversation/delivery";
+import { capabilityLabel, MODE_LABELS, plainDelivery } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -189,7 +189,10 @@ export function partitionAgents(
 }
 
 /** The delivery a reply into this exchange inherits: the agent, in the mode of the exchange's
- *  most recent attempt across the root and every delivered reply. */
+ *  most recent attempt across the root and every delivered reply. Where that is a Send the agent
+ *  does not take, or there is none (a reply to the agent's own message), it is a Send where the
+ *  agent takes it, else a BTW where it takes that, else its plain mode - an Aside to a Claude Code
+ *  session, which takes neither. */
 function exchangeDelivery(agent: Agent, read: MessageRead): NonNullable<ReplyTarget["thread"]> {
   let last: MessageDelivery | undefined;
   for (const attempt of [read.message, ...read.replies].flatMap((item) => item.deliveries)) {
@@ -198,11 +201,14 @@ function exchangeDelivery(agent: Agent, read: MessageRead): NonNullable<ReplyTar
     }
   }
   const canSteer = agent.capabilities.includes("steer");
+  const fallback = canSteer
+    ? "steer"
+    : agent.capabilities.includes("btw")
+      ? "btw"
+      : plainDelivery([agent.capabilities]);
   return {
     delivery:
-      last?.delivery === "steer" && !canSteer
-        ? "btw"
-        : (last?.delivery ?? (canSteer ? "steer" : "btw")),
+      last === undefined || (last.delivery === "steer" && !canSteer) ? fallback : last.delivery,
     target: `session:${agent.session_id}`,
     title: sessionLabel(agent.session_id, agent.title),
   };
@@ -755,9 +761,15 @@ function AgentRowDetails({
       <div
         className={`mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnCanvas}`}
       >
-        {agent.capabilities.map((capability) => (
-          <span key={capability}>{capabilityLabel(capability)}</span>
-        ))}
+        {agent.capabilities.length === 0 ? (
+          // A session that advertises no mode refuses every message, the Claude Code session
+          // whose Envoy channel Claude Code did not load among them.
+          <span>Takes no messages</span>
+        ) : (
+          agent.capabilities.map((capability) => (
+            <span key={capability}>{capabilityLabel(capability)}</span>
+          ))
+        )}
         <span>
           Seen <Timestamp at={new Date(agent.last_seen).toISOString()} />
         </span>
