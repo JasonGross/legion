@@ -44,6 +44,11 @@ test("a blank ENVOY_SESSION_TITLE falls through to tmux, asked of the server TMU
   expect(tmux.asked).toEqual([["/tmp/tmux-1000/default", "%3"]])
 })
 
+test("the socket is TMUX up to its last two commas, so a path holding a comma still names it", () => {
+  const tmux = tmuxAnswering("work", "review", "0")
+  sessionTitle({ TMUX: "/tmp/a,b/default,4242,0", TMUX_PANE: "%3" }, "/work/legion", tmux)
+  expect(tmux.asked).toEqual([["/tmp/a,b/default", "%3"]])
+})
 test("a window whose automatic-rename is off lends its name", () => {
   expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work", "review", "0"))).toBe("work:review")
   // A tmux that prints the flag as on/off rather than 1/0.

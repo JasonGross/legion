@@ -93,7 +93,8 @@ export function sessionTitle(
     return () => title
   }
   // `TMUX` is `<socket>,<server pid>,<session>`; a pane id names a pane only on its own server.
-  const socket = configuredValue(environment.TMUX)?.split(",")[0]
+  // The socket is everything before the last two commas, since a path may hold a comma.
+  const socket = configuredValue(environment.TMUX)?.split(",").slice(0, -2).join(",")
   const pane = configuredValue(environment.TMUX_PANE)?.trim()
   const name =
     (socket === undefined || socket === "" || pane === undefined

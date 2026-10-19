@@ -43214,7 +43214,7 @@ function sessionTitle(environment, directory, query = queryTmux) {
     const title = oneLine(explicit);
     return () => title;
   }
-  const socket = configuredValue(environment.TMUX)?.split(",")[0];
+  const socket = configuredValue(environment.TMUX)?.split(",").slice(0, -2).join(",");
   const pane = configuredValue(environment.TMUX_PANE)?.trim();
   const name = (socket === undefined || socket === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, pane, query)) ?? (basename(directory) || directory);
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
