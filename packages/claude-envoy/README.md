@@ -253,6 +253,15 @@ is substituted as the literal text, which used to register a session as the lite
 `${ENVOY_SESSION_ID}`. Claude Code provides `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PLUGIN_DATA`; set
 `ENVOY_SESSION_ID` only to use a controlled identity for QA (the smoke does).
 
+The session registers under a title, which Dispatch's Agents page shows in place of its session id:
+`ENVOY_SESSION_TITLE` when it is set and not blank (`ENVOY_SESSION_TITLE='review the listener'
+claude`); else, when `claude` runs inside tmux (`TMUX_PANE`), the pane's tmux name: `session:window`
+for a window someone named (`rename-window`, `new-window -n`), else the tmux session's name, with
+`:<window index>` when that session has more than one window; else the project directory's name and
+the first eight characters of the session id (`legion 3084299d`), which follows the new id after
+`/clear`. The server works the title out once as it starts, with at most one `tmux display-message`
+call bounded at one second, so a later tmux rename shows from the next start.
+
 `claude -p` can run a channel session, but it disables features that need terminal input, including
 multiple-choice questions and plan approval. Production Legion workers must have MCP and channel
 consent preconfigured and must not depend on local dialogs.

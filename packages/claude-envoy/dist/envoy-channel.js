@@ -43179,6 +43179,58 @@ async function serveEnvoyOff(serverInfo, refusal) {
   }
 }
 
+// src/session-title.ts
+import { execFileSync } from "child_process";
+import { basename } from "path";
+var TMUX_PANE_FORMAT = [
+  "#{session_name}",
+  "#{session_windows}",
+  "#{window_index}",
+  "#{window_name}",
+  "#{automatic-rename}"
+].join("\t");
+var TMUX_TIMEOUT_MS = 1000;
+var SHORT_ID_LENGTH = 8;
+function oneLine(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+function queryTmux(pane, format) {
+  try {
+    return execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: TMUX_TIMEOUT_MS
+    });
+  } catch {
+    return;
+  }
+}
+function tmuxPaneTitle(pane, query = queryTmux) {
+  const fields = query(pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
+  if (fields === undefined || fields.length < 5)
+    return;
+  const [session = "", windows, index = "", window2 = "", automaticRename] = fields.map(oneLine);
+  if (session === "")
+    return;
+  if (window2 !== "" && (automaticRename === "0" || automaticRename === "off")) {
+    return `${session}:${window2}`;
+  }
+  return windows === "1" || index === "" ? session : `${session}:${index}`;
+}
+function sessionTitle(environment, directory, query = queryTmux) {
+  const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
+  if (explicit !== undefined) {
+    const title = oneLine(explicit);
+    return () => title;
+  }
+  const pane = configuredValue(environment.TMUX_PANE);
+  const tmux = pane === undefined ? undefined : tmuxPaneTitle(pane.trim(), query);
+  if (tmux !== undefined)
+    return () => tmux;
+  const project = basename(directory) || directory;
+  return (sessionId) => `${project} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
+}
+
 // src/envoy-channel-server.ts
 var CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel";
 var CHANNEL_INBOX_LIMIT = 50;
@@ -43383,7 +43435,7 @@ async function startChannelSession(options) {
       directory: identity.directory,
       topics: forwarder.topics(),
       port: 0,
-      title: "",
+      title: options.title?.(identity.id) ?? "",
       capabilities: ["aside"],
       driving: false,
       selfSubscribed: true
@@ -43758,6 +43810,10 @@ async function runEnvoyChannelServer() {
         heartbeatMs: envoy.heartbeatMs,
         configFile,
         stateDirectory,
+        title: sessionTitle({
+          ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+          TMUX_PANE: process.env["TMUX_PANE"]
+        }, directory),
         ...configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}
       });
     }

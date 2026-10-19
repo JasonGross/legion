@@ -57,6 +57,7 @@ import {
   sessionHandoffFile,
   writePersistedRole,
 } from "./session-identity"
+import { type SessionTitle, sessionTitle } from "./session-title"
 
 const CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel" as const
 const CHANNEL_INBOX_LIMIT = 50
@@ -160,6 +161,11 @@ export interface ChannelSessionOptions {
    * process's handoff file and rebinds to the id it names; unset under the QA override.
    */
   readonly handoffPid?: number
+  /**
+   * The title each registration sends for the current id (`sessionTitle`); omitted, the title is
+   * empty and Dispatch names the session by its id.
+   */
+  readonly title?: SessionTitle
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -441,7 +447,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       directory: identity.directory,
       topics: forwarder.topics(),
       port: 0,
-      title: "",
+      title: options.title?.(identity.id) ?? "",
       capabilities: ["aside"],
       driving: false,
       selfSubscribed: true,
@@ -942,6 +948,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
         heartbeatMs: envoy.heartbeatMs,
         configFile,
         stateDirectory,
+        title: sessionTitle(
+          {
+            ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+            TMUX_PANE: process.env["TMUX_PANE"],
+          },
+          directory,
+        ),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })

@@ -10,6 +10,11 @@
 
 ### Added
 
+- A Claude Code session registers with a title, so Dispatch's Agents page names it instead of
+  showing its session id: `ENVOY_SESSION_TITLE`; else, inside tmux, the pane's tmux name
+  (`session:window` for a named window, else the session, with the window index when it has more
+  than one); else the project directory's name and the session id's first eight characters. It
+  registered an empty title.
 - The MCP server lists `slack_post` beside the ten `envoy_*` tools (sjawhar/legion#1998), a reply
   in a Slack thread with the bot token the secrets broker grants (`LEGION_SLACK_BOT_TOKEN`).
 
