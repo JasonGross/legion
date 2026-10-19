@@ -222,4 +222,13 @@ package api
 // sjawhar/legion#1999 landed at 28; main then landed sjawhar/legion#2003 at 29 and released
 // pi-legion v10.5.0 declaring it without these shapes, so this branch takes the number above it,
 // as the collision note says.)
-const DaemonAPIVersion = 30
+//
+// 31: sjawhar/legion#1986 (the issue's repository) -- an issue's record carries the repository it
+// targets and that repository's default branch, taken from Dispatch's resolved_repo and GitHub
+// when the daemon first records it: `GET /legion/v1/state` and `read_record` answer `repo` and
+// `defaultBranch` on every issue and `repo` on its pull request, and the state answers
+// `repositories`, the project's mapping as the daemon serves it (`owners`, `mapped` with each
+// repository's `default`, and `refused`, each mapped repository left out with its `reason`). A
+// plugin at 30 reads the state with a strict schema that knows none of these fields, so it
+// refuses the state.
+const DaemonAPIVersion = 31
