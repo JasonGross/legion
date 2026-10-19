@@ -118,6 +118,7 @@ test("registers the session's title, and a handoff re-registers under the new id
   const handoff = sessionHandoffFile(stateDirectory, 778)
   await writeSessionHandoff(handoff, "ses_old")
   const titles: string[] = []
+  const stamped: string[] = []
   const client = recordingClient([], {
     subscribe: async (input) => {
       titles.push(`${input.sessionID} ${input.title}`)
@@ -130,6 +131,7 @@ test("registers the session's title, and a handoff re-registers under the new id
       heartbeatMs: 25,
       handoffPid: 778,
       title: (sessionId) => `legion ${sessionId}`,
+      stampTitle: (sessionId, title) => stamped.push(`${sessionId} ${title}`),
     }),
   )
 
@@ -140,7 +142,14 @@ test("registers the session's title, and a handoff re-registers under the new id
       async () => titles.some((title) => title.startsWith("ses_new ")),
       "a registration of ses_new",
     )
+    // A few heartbeats re-register under the new id.
+    await waitFor(
+      async () => titles.filter((title) => title.startsWith("ses_new ")).length >= 3,
+      "three registrations of ses_new",
+    )
     expect(new Set(titles)).toEqual(new Set(["ses_old legion ses_old", "ses_new legion ses_new"]))
+    // The dispatch command's title is written once per id, not on every heartbeat.
+    expect(stamped).toEqual(["ses_old legion ses_old", "ses_new legion ses_new"])
   } finally {
     await session.shutdown()
     await rm(stateDirectory, { recursive: true, force: true })

@@ -42,17 +42,25 @@ const TMUX_PANE_FORMAT = [
 const TMUX_TIMEOUT_MS = 1_000
 const SHORT_ID_LENGTH = 8
 
-/** How many parents `processAncestors` follows before it stops. */
+/** How many parents `isAncestor` follows before it stops. */
 const MAX_ANCESTORS = 64
 
+// Bidirectional overrides and isolates would reorder the short id after the name on the Agents
+// page. Other format characters stay: a zero-width joiner holds an emoji sequence together.
 function oneLine(value: string): string {
-  return value.replace(/[\s\p{Cc}]+/gu, " ").trim()
+  return value
+    .replace(/[\u202a-\u202e\u2066-\u2069]/gu, "")
+    .replace(/[\s\p{Cc}]+/gu, " ")
+    .trim()
 }
 
-/** Whether `value` holds a character that shows: not whitespace, a control or format character,
- *  an ignorable code point, or the blank braille pattern. */
+/** Whether `value` holds a character that shows: not whitespace, a control, format, surrogate or
+ *  unassigned code point, an ignorable code point, or the blank braille pattern. A private-use
+ *  glyph (a patched font's icon) counts. */
 function visible(value: string): boolean {
-  return value.replace(/[\s\p{C}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== ""
+  return (
+    value.replace(/[\s\p{Cc}\p{Cf}\p{Cs}\p{Cn}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== ""
+  )
 }
 
 /** The parent of process `pid`, or undefined when it cannot be read. */
@@ -68,6 +76,7 @@ function parentPid(pid: number): number | undefined {
       execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
         encoding: "utf8",
         timeout: TMUX_TIMEOUT_MS,
+        killSignal: "SIGKILL",
       }).trim(),
     )
     return Number.isInteger(parent) ? parent : undefined
@@ -76,16 +85,15 @@ function parentPid(pid: number): number | undefined {
   }
 }
 
-/** `pid` and its ancestors, nearest first, as far as they can be read. */
-export function processAncestors(pid: number): ReadonlySet<string> {
-  const chain = new Set<string>()
+/** Whether process `candidate` is `pid` or one of its ancestors, walking up from `pid` and
+ *  stopping at the first match, at init, or after `MAX_ANCESTORS` steps. */
+export function isAncestor(candidate: string, pid: number = process.pid): boolean {
   let current: number | undefined = pid
-  while (current !== undefined && current > 1 && chain.size < MAX_ANCESTORS) {
-    if (chain.has(String(current))) break
-    chain.add(String(current))
+  for (let step = 0; current !== undefined && current > 1 && step < MAX_ANCESTORS; step++) {
+    if (String(current) === candidate) return true
     current = parentPid(current)
   }
-  return chain
+  return false
 }
 
 /**
@@ -116,15 +124,15 @@ export function queryTmux(socket: string, pane: string, format: string): string 
 /**
  * The tmux name of `pane` on the server at `socket` whose process is `serverPid`: `session:window`
  * for a window whose `automatic-rename` is off, else the tmux session's name. Undefined when tmux
- * cannot say, when another server now answers on that socket, when the pane's process is not in
- * `ancestors` (the pane is not this session's), and for a session named only by digits (plain
+ * cannot say, when another server now answers on that socket, when `ownPane` refuses the pane's
+ * first process (the pane is not this session's), and for a session named only by digits (plain
  * `tmux` names its first one `0`) in a window nobody named, since that says nothing on any machine.
  */
 export function tmuxPaneTitle(
   socket: string,
   serverPid: string,
   pane: string,
-  ancestors: ReadonlySet<string>,
+  ownPane: (panePid: string) => boolean,
   query: TmuxQuery = queryTmux,
 ): string | undefined {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)
@@ -133,7 +141,7 @@ export function tmuxPaneTitle(
   if (fields === undefined || fields.length < 6) return undefined
   const [name = "", window = "", automaticRename, group = "", pid, panePid = ""] =
     fields.map(oneLine)
-  if (pid !== serverPid || !ancestors.has(panePid)) return undefined
+  if (pid !== serverPid || !ownPane(panePid)) return undefined
   const session = group === "" ? name : group
   // A tmux too old to expand a format prints it as it was sent.
   if (session === "" || session.startsWith("#{")) return undefined
@@ -147,8 +155,8 @@ export function tmuxPaneTitle(
  * The title this session registers with the Envoy listener, which Dispatch's Agents page shows in
  * place of the session id: `ENVOY_SESSION_TITLE`; else a name and the current id's first eight
  * characters, the name being the pane's tmux name inside tmux (`TMUX` and `TMUX_PANE`, asked of
- * the server `TMUX` names, for a pane whose process is in `ancestors`, this process's own chain
- * by default) and the project directory's name otherwise. The short id keeps two sessions that
+ * the server `TMUX` names, for a pane whose first process `ownPane` accepts, by default one of this
+ * process's ancestors) and the project directory's name otherwise. The short id keeps two sessions that
  * share a tmux window or session apart. The name is worked out once, as the server starts: a tmux
  * rename after that shows on the next start.
  */
@@ -156,7 +164,7 @@ export function sessionTitle(
   environment: SessionTitleEnvironment,
   directory: string,
   query: TmuxQuery = queryTmux,
-  ancestors: () => ReadonlySet<string> = () => processAncestors(process.pid),
+  ownPane: (panePid: string) => boolean = (panePid) => isAncestor(panePid),
 ): SessionTitle {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE)
   // A title with nothing that shows (a zero-width space, a control character) would be a blank row.
@@ -172,7 +180,7 @@ export function sessionTitle(
   const name =
     (socket === "" || serverPid === "" || pane === undefined
       ? undefined
-      : tmuxPaneTitle(socket, serverPid, pane, ancestors(), query)) ??
+      : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ??
     (basename(directory) || directory)
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`
 }

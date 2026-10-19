@@ -61,8 +61,9 @@ const PICTURE_EXTENSIONS: Record<PictureType, string> = {
 
 /** `DISPATCH_STATE_DIR`, else `<XDG_STATE_HOME or ~/.local/state>/dispatch`. Empty counts as unset. */
 export function sessionStateRoot(env: Readonly<Record<string, string | undefined>>): string {
-  if (env.DISPATCH_STATE_DIR) return env.DISPATCH_STATE_DIR;
-  return join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "dispatch");
+  const stateDir = env["DISPATCH_STATE_DIR"];
+  if (stateDir) return stateDir;
+  return join(env["XDG_STATE_HOME"] || join(homedir(), ".local", "state"), "dispatch");
 }
 
 /** `<root>/sessions/<id>`; an id that is not one plain path segment is refused. */

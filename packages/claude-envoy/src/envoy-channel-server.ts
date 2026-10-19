@@ -8,6 +8,10 @@ import {
   postDeliveryReply,
   renderInbound,
 } from "@legion/envoy-client/delivery"
+import {
+  sessionDirectory as dispatchSessionDirectory,
+  writeSessionTitle,
+} from "@legion/envoy-client/dispatch-session-state"
 import { subscriptionRemovedTopics } from "@legion/envoy-client/dispatch-subscribe"
 import { messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
@@ -166,6 +170,12 @@ export interface ChannelSessionOptions {
    * empty and Dispatch names the session by its id.
    */
   readonly title?: SessionTitle
+  /**
+   * Writes the title where the `dispatch` command reads it to stamp the session's Dispatch writes
+   * (`writeSessionTitle` into the session's Dispatch state directory), as pi-envoy does for an Oh
+   * My Pi session; omitted, nothing is written.
+   */
+  readonly stampTitle?: (sessionId: string, title: string) => void
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -440,14 +450,35 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
   }
 
-  /** Advertise the current id and topics; runs only inside `serialized`. */
+  /** The title last stamped, so a heartbeat stamps nothing new. */
+  let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
+
+  /**
+   * Advertise the current id and topics; runs only inside `serialized`. The title is also stamped
+   * for the `dispatch` command (`options.stampTitle`) whenever it or the id changes.
+   */
   const register = async (): Promise<void> => {
+    const title = options.title?.(identity.id) ?? ""
+    if (
+      options.stampTitle !== undefined &&
+      title !== "" &&
+      (stampedTitle?.sessionID !== identity.id || stampedTitle.title !== title)
+    ) {
+      try {
+        options.stampTitle(identity.id, title)
+        stampedTitle = { sessionID: identity.id, title }
+      } catch (error) {
+        process.stderr.write(
+          `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}\n`,
+        )
+      }
+    }
     await options.client.subscribe({
       sessionID: identity.id,
       directory: identity.directory,
       topics: forwarder.topics(),
       port: 0,
-      title: options.title?.(identity.id) ?? "",
+      title,
       capabilities: ["aside"],
       driving: false,
       selfSubscribed: true,
@@ -956,6 +987,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
           },
           directory,
         ),
+        stampTitle: (sessionId, title) =>
+          writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), title),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })

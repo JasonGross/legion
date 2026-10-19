@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  processAncestors,
+  isAncestor,
   queryTmux,
   sessionTitle,
   type TmuxQuery,
@@ -17,7 +17,7 @@ const TMUX = `/tmp/tmux-1000/default,${SERVER_PID},0`
 /** The pane's first process, and this session's ancestors, which hold it. */
 const PANE_PID = "777"
 const ANCESTORS: ReadonlySet<string> = new Set(["900", "800", PANE_PID])
-const ours = () => ANCESTORS
+const ours = (panePid: string) => ANCESTORS.has(panePid)
 
 /** A tmux server `pid` that answers every query with a pane in `session`, its window `window`
  *  with `automatic-rename` `automatic`, in group `group`, tab-joined as `display-message -p`
@@ -44,7 +44,7 @@ const noTmux: TmuxQuery = () => {
   throw new Error("tmux must not be asked")
 }
 
-const paneTitle = (query: TmuxQuery) => tmuxPaneTitle("s", SERVER_PID, "%3", ANCESTORS, query)
+const paneTitle = (query: TmuxQuery) => tmuxPaneTitle("s", SERVER_PID, "%3", ours, query)
 
 test("ENVOY_SESSION_TITLE names the session, ahead of tmux, on one line", () => {
   const title = sessionTitle(
@@ -116,7 +116,9 @@ test("a pane of grouped sessions is named after the group, whichever session tmu
 test("a tmux too old to expand the format lends no name", () => {
   const unexpanded: TmuxQuery = () =>
     "#{session_name}\t#{window_name}\t#{automatic-rename}\t#{session_group}\t#{pid}\t#{pane_pid}\n"
-  expect(tmuxPaneTitle("s", "#{pid}", "%3", new Set(["#{pane_pid}"]), unexpanded)).toBeUndefined()
+  expect(
+    tmuxPaneTitle("s", "#{pid}", "%3", (panePid) => panePid === "#{pane_pid}", unexpanded),
+  ).toBeUndefined()
 })
 
 test("an automatically named window reads as the session alone, never its index", () => {
@@ -192,10 +194,30 @@ test("a TMUX_PANE left over from elsewhere names no pane but this session's own"
   )
 })
 
-test("processAncestors holds this process and its parent", () => {
-  const chain = processAncestors(process.pid)
-  expect(chain.has(String(process.pid))).toBe(true)
-  expect(chain.has(String(process.ppid))).toBe(true)
+test("isAncestor finds this process and its parent, and not a process outside its chain", () => {
+  expect(isAncestor(String(process.pid))).toBe(true)
+  expect(isAncestor(String(process.ppid))).toBe(true)
+  expect(isAncestor("1")).toBe(false)
+  const child = Bun.spawnSync([process.execPath, "-e", "process.stdout.write(String(process.pid))"])
+  expect(isAncestor(child.stdout.toString())).toBe(false)
+})
+
+test("a title keeps no bidirectional override, and keeps a private-use glyph", () => {
+  expect(
+    sessionTitle({ ENVOY_SESSION_TITLE: "\u202eevil.txt" }, "/work/legion", noTmux)(SESSION_ID),
+  ).toBe("evil.txt")
+  expect(paneTitle(tmuxAnswering("adv", "\u202ewin", "0"))).toBe("adv:win")
+  expect(sessionTitle({ ENVOY_SESSION_TITLE: "\uf121" }, "/work/legion", noTmux)(SESSION_ID)).toBe(
+    "\uf121",
+  )
+  // A zero-width joiner inside an emoji sequence stays.
+  expect(
+    sessionTitle(
+      { ENVOY_SESSION_TITLE: "\u{1f469}\u200d\u{1f4bb} dev" },
+      "/work/legion",
+      noTmux,
+    )(SESSION_ID),
+  ).toBe("\u{1f469}\u200d\u{1f4bb} dev")
 })
 
 // This one drives a real tmux server, and skips without one, as the tmux runtime's own tests do.
@@ -226,10 +248,16 @@ test.skipIf(!hasTmux)(
         execFileSync("tmux", ["-S", at, "display-message", "-p", "-t", target, format], {
           encoding: "utf8",
         })
-      expect(tmuxPaneTitle(socket, pid, pane, new Set([panePid]), unbounded)).toBe("probe")
-      expect(tmuxPaneTitle(socket, "1", pane, new Set([panePid]), unbounded)).toBeUndefined()
+      expect(
+        tmuxPaneTitle(socket, pid, pane, (candidate) => candidate === panePid, unbounded),
+      ).toBe("probe")
+      expect(
+        tmuxPaneTitle(socket, "1", pane, (candidate) => candidate === panePid, unbounded),
+      ).toBeUndefined()
       // A pane whose process is not one of this session's ancestors is not this session's.
-      expect(tmuxPaneTitle(socket, pid, pane, new Set(["1"]), unbounded)).toBeUndefined()
+      expect(
+        tmuxPaneTitle(socket, pid, pane, (candidate) => candidate === "1", unbounded),
+      ).toBeUndefined()
     } finally {
       execFileSync("tmux", ["-S", socket, "kill-server"])
       rmSync(directory, { recursive: true, force: true })

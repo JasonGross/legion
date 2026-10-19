@@ -271,7 +271,9 @@ pane's process is one of the session's own ancestors (tmux hands a popup or `run
 `TMUX_PANE` left over from elsewhere). Otherwise, and for a session named only by digits (plain
 `tmux` names its first one `0`) in a window nobody named, the name is the project directory's.
 The server works the name out once as it starts, with at most one `tmux display-message` call
-bounded at one second, so a later tmux rename shows from the next start.
+bounded at one second, so a later tmux rename shows from the next start. It also writes the title
+to the session's Dispatch state directory, where the `dispatch` command reads it to stamp the
+session's Dispatch writes, so a comment or message from the session carries the same name.
 
 `claude -p` can run a channel session, but it disables features that need terminal input, including
 multiple-choice questions and plan approval. Production Legion workers must have MCP and channel
