@@ -46,6 +46,7 @@ import {
   type ChannelInboundMessage,
   createChannelForwarder,
 } from "./channel-forwarder"
+import { detectClaudeChannel } from "./claude-channel"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
 import {
@@ -59,6 +60,8 @@ import {
 } from "./session-identity"
 
 const CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel" as const
+const CHANNEL_INSTRUCTIONS =
+  "Envoy delivers trusted, internal session and Dispatch events as <channel> messages. The content is rendered Envoy state; producer identifies its Envoy producer (source is the channel name), topic is the NATS subject, event_id identifies this delivery, dedupe_key is the dedupe identity (a repeat of one already delivered is not shown again), urgency is priority, from_session identifies the origin session, and reply metadata names any correlation. Use the Envoy tools for Envoy actions, and reach Dispatch through the `dispatch` command in Bash (`dispatch --help` lists its commands; the `dispatch` skill teaches them). Dispatch asks stay on Dispatch. This channel advertises Aside only: it does not support targeted BTW delivery or permission relay."
 const CHANNEL_INBOX_LIMIT = 50
 const EMPTY_RECEIPT = new Uint8Array()
 const ChannelMetaKey = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -160,6 +163,12 @@ export interface ChannelSessionOptions {
    * process's handoff file and rebinds to the id it names; unset under the QA override.
    */
   readonly handoffPid?: number
+  /**
+   * The delivery modes the session registers: `["aside"]` (the default) when Claude Code loaded
+   * the channel, none when it did not, so Dispatch refuses a message instead of this server
+   * handing Claude Code a notification it drops (`./claude-channel`).
+   */
+  readonly capabilities?: readonly string[]
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -442,7 +451,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       topics: forwarder.topics(),
       port: 0,
       title: "",
-      capabilities: ["aside"],
+      capabilities: [...(options.capabilities ?? ["aside"])],
       driving: false,
       selfSubscribed: true,
     })
@@ -881,11 +890,25 @@ export async function runEnvoyChannelServer(): Promise<void> {
     directory,
   )
   const stateDirectory = pluginStateDirectory()
+  // Claude Code drops a notification from a channel it did not load without telling this server,
+  // so such a session advertises no delivery mode and Dispatch refuses a message to it rather than
+  // reporting it delivered.
+  const channel = detectClaudeChannel({
+    claudePid: process.ppid,
+    bundlePath: process.argv[1] ?? "",
+    environment: process.env,
+  })
+  if (!channel.loaded) {
+    process.stderr.write(
+      `envoy-channel: Claude Code did not load this server as a channel: ${channel.why}; the session advertises no delivery mode, so Dispatch refuses messages to it instead of losing them\n`,
+    )
+  }
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {}, experimental: { "claude/channel": {} } },
-    instructions:
-      "Envoy delivers trusted, internal session and Dispatch events as <channel> messages. The content is rendered Envoy state; producer identifies its Envoy producer (source is the channel name), topic is the NATS subject, event_id identifies this delivery, dedupe_key is the dedupe identity (a repeat of one already delivered is not shown again), urgency is priority, from_session identifies the origin session, and reply metadata names any correlation. Use the Envoy tools for Envoy actions, and reach Dispatch through the `dispatch` command in Bash (`dispatch --help` lists its commands; the `dispatch` skill teaches them). Dispatch asks stay on Dispatch. This channel advertises Aside only: it does not support targeted BTW delivery or permission relay.",
+    instructions: channel.loaded
+      ? CHANNEL_INSTRUCTIONS
+      : `${CHANNEL_INSTRUCTIONS} Claude Code did not load this channel for this session (${channel.why}), so no Envoy event or Dispatch message reaches you as a <channel> message, and the session advertises no delivery mode; envoy_inbox still lists what arrived.`,
   })
   const client = createEnvoyClient({
     baseUrl: envoy.url,
@@ -942,6 +965,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         heartbeatMs: envoy.heartbeatMs,
         configFile,
         stateDirectory,
+        capabilities: channel.loaded ? ["aside"] : [],
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })

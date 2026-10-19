@@ -53,8 +53,23 @@ events and sends them to the current Claude Code session as supported
   Claude Code or the model processed the event: the channel protocol has no processing ack. A plain
   direct send (`/v1/messages/send`) is a JetStream publish and gets no receipt: its reply subject is
   the publisher's acknowledgement inbox, and an empty receipt there fails the publish.
-- The server registers the session as self-subscribed with `capabilities: ["aside"]`. It does not
-  advertise `btw` or `steer` (see "Intentionally omitted").
+- The server registers the session as self-subscribed with `capabilities: ["aside"]` when Claude
+  Code loaded it as a channel, and with no capability when it did not. It does not advertise `btw`
+  or `steer` (see "Intentionally omitted"). Claude Code never tells a server whether it loaded its
+  channel: the MCP handshake is the same either way, and a notification sent while it is not loaded
+  is dropped without a word, so Dispatch would record an Aside to that session as sent while the
+  model never saw it. The server therefore reads its `claude` process's command line
+  (`src/claude-channel.ts`) and applies Claude Code's gate as of 2.1.287: an entry naming this
+  plugin (from a bare MCP config, any `server:` entry) in `--channels`, or in
+  `--dangerously-load-development-channels` outside `-p`; the marketplace the plugin is installed
+  from; and, for `--channels`, an `allowedChannelPlugins` entry in the highest managed settings
+  source present (the cached `remote-settings.json`, else `managed-settings.json` with its
+  `managed-settings.d/` drop-ins). With no capability the listener refuses every targeted delivery
+  (`session … does not advertise aside`), Dispatch shows the session as taking no messages, and the
+  server says why on stderr and in its MCP instructions. `ENVOY_CHANNEL_LOADED=1` or `0` overrides
+  the check, for an allowlist an MDM profile delivers. A command line it cannot read counts as
+  loaded, and so does a one-word one from a Claude Code that runs on Node, whose
+  `process.title = "claude"` overwrites the arguments.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.

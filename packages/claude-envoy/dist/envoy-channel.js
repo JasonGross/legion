@@ -43040,6 +43040,198 @@ function createChannelForwarder(connection, options) {
   };
 }
 
+// src/claude-channel.ts
+import { spawnSync } from "child_process";
+import { readdirSync, readFileSync as readFileSync3, readlinkSync as readlinkSync2 } from "fs";
+import { homedir as homedir2 } from "os";
+import { basename, join as join2, sep } from "path";
+var CHANNEL_FLAGS = {
+  "--channels": false,
+  "--dangerously-load-development-channels": true
+};
+function parseEntry(value, dev) {
+  if (value.startsWith("plugin:")) {
+    const spec = value.slice("plugin:".length);
+    const at = spec.indexOf("@");
+    if (at <= 0 || at === spec.length - 1)
+      return;
+    return { kind: "plugin", name: spec.slice(0, at), marketplace: spec.slice(at + 1), dev };
+  }
+  if (value.startsWith("server:") && value.length > "server:".length) {
+    return { kind: "server", name: value.slice("server:".length), dev };
+  }
+  return;
+}
+function claudeChannelEntries(argv, exact = true) {
+  const interactive = !exact || !argv.includes("-p") && !argv.includes("--print");
+  const entries = [];
+  for (let index = 0;index < argv.length; index++) {
+    const argument = argv[index] ?? "";
+    const equals = argument.indexOf("=");
+    const flag = equals === -1 ? argument : argument.slice(0, equals);
+    const dev = CHANNEL_FLAGS[flag];
+    if (dev === undefined)
+      continue;
+    const values = [];
+    if (equals !== -1)
+      values.push(argument.slice(equals + 1));
+    else {
+      while (index + 1 < argv.length && !(argv[index + 1] ?? "-").startsWith("-")) {
+        values.push(argv[index + 1] ?? "");
+        index++;
+      }
+    }
+    if (dev && !interactive)
+      continue;
+    for (const value of values) {
+      const entry = parseEntry(value, dev);
+      if (entry !== undefined)
+        entries.push(entry);
+    }
+  }
+  return entries;
+}
+function claudeChannelGate(input) {
+  const { commandLine: commandLine2, plugin, allowlist } = input;
+  if (commandLine2 === undefined)
+    return { loaded: true };
+  const ours = plugin === undefined ? "server:<name>" : `plugin:${plugin.name}@${plugin.marketplace ?? "<marketplace>"}`;
+  const entry = claudeChannelEntries(commandLine2.argv, commandLine2.exact).find((candidate) => plugin === undefined ? candidate.kind === "server" : candidate.kind === "plugin" && candidate.name === plugin.name);
+  if (entry === undefined) {
+    return {
+      loaded: false,
+      why: `claude was started without --channels ${ours} (or --dangerously-load-development-channels ${ours})`
+    };
+  }
+  if (entry.kind === "server") {
+    return entry.dev ? { loaded: true } : {
+      loaded: false,
+      why: `server:${entry.name} is not on Claude Code's approved channels allowlist (use --dangerously-load-development-channels server:${entry.name})`
+    };
+  }
+  const asked = `plugin:${entry.name}@${entry.marketplace}`;
+  if (plugin?.marketplace !== undefined && entry.marketplace !== plugin.marketplace) {
+    return {
+      loaded: false,
+      why: `claude asked for ${asked} but this plugin is installed from ${plugin.marketplace}`
+    };
+  }
+  if (entry.dev)
+    return { loaded: true };
+  if (allowlist === undefined) {
+    return {
+      loaded: false,
+      why: `${asked} is not on Claude Code's approved channels allowlist (an organization adds it with allowedChannelPlugins in managed settings; for one session use --dangerously-load-development-channels ${asked})`
+    };
+  }
+  return allowlist.some((allowed) => allowed.marketplace === entry.marketplace && allowed.plugin === entry.name) ? { loaded: true } : {
+    loaded: false,
+    why: `${asked} is not on your organization's approved channels list (allowedChannelPlugins in managed settings)`
+  };
+}
+function processExecutable(pid) {
+  if (process.platform === "linux") {
+    try {
+      return readlinkSync2(`/proc/${pid}/exe`);
+    } catch {
+      return;
+    }
+  }
+  if (process.platform === "win32")
+    return;
+  const result = spawnSync("lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], {
+    encoding: "utf8",
+    timeout: 2000
+  });
+  const first = (result.stdout ?? "").split(`
+`).find((line) => line.startsWith("n"));
+  return first === undefined ? undefined : first.slice(1);
+}
+function processCommandLine(pid, executable = processExecutable) {
+  let commandLine2;
+  if (process.platform === "linux") {
+    try {
+      const argv = readFileSync3(`/proc/${pid}/cmdline`, "utf8").split("\x00").filter((argument) => argument !== "");
+      commandLine2 = argv.length === 0 ? undefined : { argv, exact: true };
+    } catch {
+      commandLine2 = undefined;
+    }
+  } else if (process.platform !== "win32") {
+    const result = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 1000
+    });
+    const line = result.status === 0 ? result.stdout.trim() : "";
+    commandLine2 = line === "" ? undefined : { argv: line.split(/\s+/), exact: false };
+  }
+  if (commandLine2 === undefined || commandLine2.argv.length > 1)
+    return commandLine2;
+  const program = basename(executable(pid) ?? "");
+  return program === "node" || program === "nodejs" ? undefined : commandLine2;
+}
+function installedMarketplace(bundlePath) {
+  const parts = bundlePath.split(sep);
+  for (let index = 0;index + 2 < parts.length; index++) {
+    if (parts[index] === "plugins" && parts[index + 1] === "cache")
+      return parts[index + 2];
+  }
+  return;
+}
+var ManagedChannelSettings = exports_external.object({
+  allowedChannelPlugins: exports_external.array(exports_external.object({ marketplace: exports_external.string(), plugin: exports_external.string() })).optional()
+});
+function managedSettingsDirectory() {
+  switch (process.platform) {
+    case "darwin":
+      return "/Library/Application Support/ClaudeCode";
+    case "win32":
+      return "C:\\Program Files\\ClaudeCode";
+    default:
+      return "/etc/claude-code";
+  }
+}
+function readChannelSettings(file2, nonEmpty2 = false) {
+  try {
+    const value = JSON.parse(readFileSync3(file2, "utf8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return;
+    if (nonEmpty2 && Object.keys(value).length === 0)
+      return;
+    const parsed = ManagedChannelSettings.safeParse(value);
+    return { list: parsed.success ? parsed.data.allowedChannelPlugins : undefined };
+  } catch {
+    return;
+  }
+}
+function channelAllowlist(directories) {
+  const remote = readChannelSettings(join2(directories.configDirectory, "remote-settings.json"), true);
+  if (remote !== undefined)
+    return remote.list;
+  const dropIns = join2(directories.managedDirectory, "managed-settings.d");
+  let dropInFiles = [];
+  try {
+    dropInFiles = readdirSync(dropIns).filter((name) => name.endsWith(".json")).sort().map((name) => join2(dropIns, name));
+  } catch {
+    dropInFiles = [];
+  }
+  const lists = [join2(directories.managedDirectory, "managed-settings.json"), ...dropInFiles].map((file2) => readChannelSettings(file2)?.list).filter((list) => list !== undefined);
+  return lists.length === 0 ? undefined : lists.flat();
+}
+function detectClaudeChannel(input) {
+  const override = input.environment["ENVOY_CHANNEL_LOADED"]?.trim();
+  if (override === "1")
+    return { loaded: true };
+  if (override === "0")
+    return { loaded: false, why: "ENVOY_CHANNEL_LOADED=0" };
+  const configDirectory = input.environment["CLAUDE_CONFIG_DIR"]?.trim() || join2(homedir2(), ".claude");
+  const plugin = input.environment["CLAUDE_PLUGIN_ROOT"]?.trim() ? { name: "claude-envoy", marketplace: installedMarketplace(input.bundlePath) } : undefined;
+  return claudeChannelGate({
+    commandLine: processCommandLine(input.claudePid),
+    plugin,
+    allowlist: channelAllowlist({ managedDirectory: managedSettingsDirectory(), configDirectory })
+  });
+}
+
 // src/claude-session.ts
 function configuredValue(value) {
   return value !== undefined && value.trim().length > 0 ? value : undefined;
@@ -43056,7 +43248,7 @@ function claudeProjectDirectory(environment, fallback) {
 
 // src/session-identity.ts
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { dirname as dirname2, join as join2 } from "path";
+import { dirname as dirname2, join as join3 } from "path";
 var PersistedRole = exports_external.object({ session_id: exports_external.string().min(1), role: exports_external.string().min(1) });
 
 class SessionIdentity {
@@ -43074,13 +43266,13 @@ class SessionIdentity {
   }
 }
 function sessionHandoffDirectory(stateDirectory, claudePid) {
-  return join2(stateDirectory, "sessions", String(claudePid));
+  return join3(stateDirectory, "sessions", String(claudePid));
 }
 function sessionHandoffFile(stateDirectory, claudePid) {
-  return join2(sessionHandoffDirectory(stateDirectory, claudePid), "session-id");
+  return join3(sessionHandoffDirectory(stateDirectory, claudePid), "session-id");
 }
 function roleStateFile(stateDirectory, sessionId) {
-  return join2(stateDirectory, "roles", `${encodeURIComponent(sessionId)}.json`);
+  return join3(stateDirectory, "roles", `${encodeURIComponent(sessionId)}.json`);
 }
 async function readPersistedRole(roleFile) {
   try {
@@ -43124,7 +43316,7 @@ function processExists(pid) {
   }
 }
 async function pruneStaleSessionHandoffs(stateDirectory) {
-  const sessions = join2(stateDirectory, "sessions");
+  const sessions = join3(stateDirectory, "sessions");
   const entries = await readdir(sessions).catch((error48) => {
     if (hasErrnoCode(error48, "ENOENT"))
       return [];
@@ -43133,7 +43325,7 @@ async function pruneStaleSessionHandoffs(stateDirectory) {
   for (const entry of entries) {
     if (!/^\d+$/.test(entry) || processExists(Number(entry)))
       continue;
-    await rm(join2(sessions, entry), { recursive: true, force: true });
+    await rm(join3(sessions, entry), { recursive: true, force: true });
   }
 }
 
@@ -43181,6 +43373,7 @@ async function serveEnvoyOff(serverInfo, refusal) {
 
 // src/envoy-channel-server.ts
 var CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel";
+var CHANNEL_INSTRUCTIONS = "Envoy delivers trusted, internal session and Dispatch events as <channel> messages. The content is rendered Envoy state; producer identifies its Envoy producer (source is the channel name), topic is the NATS subject, event_id identifies this delivery, dedupe_key is the dedupe identity (a repeat of one already delivered is not shown again), urgency is priority, from_session identifies the origin session, and reply metadata names any correlation. Use the Envoy tools for Envoy actions, and reach Dispatch through the `dispatch` command in Bash (`dispatch --help` lists its commands; the `dispatch` skill teaches them). Dispatch asks stay on Dispatch. This channel advertises Aside only: it does not support targeted BTW delivery or permission relay.";
 var CHANNEL_INBOX_LIMIT = 50;
 var EMPTY_RECEIPT = new Uint8Array;
 var ChannelMetaKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -43384,7 +43577,7 @@ async function startChannelSession(options) {
       topics: forwarder.topics(),
       port: 0,
       title: "",
-      capabilities: ["aside"],
+      capabilities: [...options.capabilities ?? ["aside"]],
       driving: false,
       selfSubscribed: true
     });
@@ -43701,9 +43894,18 @@ async function runEnvoyChannelServer() {
     CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"]
   }), directory);
   const stateDirectory = pluginStateDirectory();
+  const channel = detectClaudeChannel({
+    claudePid: process.ppid,
+    bundlePath: process.argv[1] ?? "",
+    environment: process.env
+  });
+  if (!channel.loaded) {
+    process.stderr.write(`envoy-channel: Claude Code did not load this server as a channel: ${channel.why}; the session advertises no delivery mode, so Dispatch refuses messages to it instead of losing them
+`);
+  }
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {}, experimental: { "claude/channel": {} } },
-    instructions: "Envoy delivers trusted, internal session and Dispatch events as <channel> messages. The content is rendered Envoy state; producer identifies its Envoy producer (source is the channel name), topic is the NATS subject, event_id identifies this delivery, dedupe_key is the dedupe identity (a repeat of one already delivered is not shown again), urgency is priority, from_session identifies the origin session, and reply metadata names any correlation. Use the Envoy tools for Envoy actions, and reach Dispatch through the `dispatch` command in Bash (`dispatch --help` lists its commands; the `dispatch` skill teaches them). Dispatch asks stay on Dispatch. This channel advertises Aside only: it does not support targeted BTW delivery or permission relay."
+    instructions: channel.loaded ? CHANNEL_INSTRUCTIONS : `${CHANNEL_INSTRUCTIONS} Claude Code did not load this channel for this session (${channel.why}), so no Envoy event or Dispatch message reaches you as a <channel> message, and the session advertises no delivery mode; envoy_inbox still lists what arrived.`
   });
   const client = createEnvoyClient({
     baseUrl: envoy.url,
@@ -43758,6 +43960,7 @@ async function runEnvoyChannelServer() {
         heartbeatMs: envoy.heartbeatMs,
         configFile,
         stateDirectory,
+        capabilities: channel.loaded ? ["aside"] : [],
         ...configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}
       });
     }
