@@ -1903,6 +1903,46 @@ test("a broadcast leaves out a selected agent that does not advertise the chosen
   }
 });
 
+test("a broadcast whose selection holds an Aside-only session goes as an Aside until the sender picks a mode, and says so", async () => {
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    fireEvent.click(within(region).getByRole("checkbox", { name: "Select Planner for broadcast" }));
+    let broadcast = within(region).getByRole("region", { name: "Broadcast" });
+    const mode = () =>
+      within(broadcast).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    // The Planner takes BTW: the broadcast's usual default, named by nothing.
+    expect(mode().value).toBe("btw");
+    expect(within(broadcast).queryByText(/Sending as Aside/)).toBeNull();
+    // The Reviewer advertises `aside` only, so the selection's mode becomes Aside and reaches both.
+    fireEvent.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    broadcast = within(region).getByRole("region", { name: "Broadcast" });
+    expect(mode().value).toBe("aside");
+    expect(
+      within(broadcast).getByText("Sending as Aside: Reviewer does not advertise BTW.")
+    ).toBeTruthy();
+    expect(within(broadcast).queryByText(/Excluded:/)).toBeNull();
+    fireEvent.change(within(broadcast).getByRole("textbox", { name: "Broadcast message" }), {
+      target: { value: "Report status." },
+    });
+    fireEvent.click(within(broadcast).getByRole("button", { name: "Send to 2" }));
+    await waitFor(() =>
+      expect(page.createBroadcast).toHaveBeenCalledWith({
+        body: "Report status.",
+        delivery: "aside",
+        idempotency_key: expect.any(String),
+        session_ids: ["planner-session", "reviewer-session"],
+      })
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a broadcast composer labels a mode-mismatched recipient", () => {
   const [, reviewer] = agents;
   const composer = broadcastPlan(new Set([reviewer.session_id]), [reviewer], "btw");
@@ -2393,6 +2433,13 @@ test("the header checkbox follows the filters and its count never hides a select
     // Everything, then narrow: the header counts the matching row and names the other one.
     fireEvent.click(header);
     expect(within(region).getByText("2 of 2 matching selected")).toBeTruthy();
+    // Picked, so the Aside-only Reviewer is left out of the count below.
+    fireEvent.change(
+      within(within(region).getByRole("region", { name: "Broadcast" })).getByRole("combobox", {
+        name: "Delivery mode",
+      }),
+      { target: { value: "btw" } }
+    );
     fireEvent.change(search, { target: { value: "PLANNER" } });
     await waitFor(() =>
       expect(within(region).queryByRole("heading", { level: 2, name: "Reviewer" })).toBeNull()

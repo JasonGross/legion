@@ -95,10 +95,13 @@ A broadcast sends one message to many agents.
    the folded groups.
 2. A broadcast box appears at the bottom of the page. Its heading counts the recipients, for
    example `Broadcast to 3 of 4 selected`, and each selected agent is a chip you can remove.
-3. Pick the mode, type the message, and choose **Send to N**.
+3. Type the message, pick the mode if you want another, and choose **Send to N**.
 
-An agent that does not take the mode you picked is left out, and its chip says why. Dispatch never
-switches it to another mode. One broadcast reaches at most 100 agents.
+Until you pick a mode, a broadcast goes as a BTW, or as an Aside when an agent you selected takes
+Aside but not BTW (a Claude Code session, for example). The box then says "Sending as Aside" and
+names that agent. An agent that does not take the mode the broadcast goes in is left out, and its
+chip says why; once you pick a mode, Dispatch never switches it to another. One broadcast reaches
+at most 100 agents.
 
 Your selection is what you ticked, not what the filters show. Narrowing the filters after you tick
 does not drop anyone; the count beside the checkbox says how many selected agents are outside the

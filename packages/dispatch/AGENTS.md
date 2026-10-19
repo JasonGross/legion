@@ -184,6 +184,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   "Sending as Aside: … does not advertise Send." while it is not Send, and words its warning for
   a session that advertises no mode at all ("advertises no delivery mode"), which the agent card
   shows as `Takes no messages` and the live view as `agent-takes-no-messages`.
+- A broadcast's mode is null in `useBroadcastComposition` until the sender picks one; the page
+  then sends in `broadcastDelivery` (`features/conversation/delivery.ts`) of the selected live
+  sessions: BTW, else Aside when every selected session that takes any mode takes Aside and one
+  refuses BTW (a Claude Code session), and the composer says "Sending as Aside: … does not
+  advertise BTW.". The server still never switches a mode it is sent.
 - The Agents broadcast page renders recipients in the order the server returns them: the send's
   tick order after exclusions.
 - A refused broadcast's Restore draft refuses in turn while a broadcast has been begun since:

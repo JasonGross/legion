@@ -41,6 +41,22 @@ export function plainDelivery(capabilities: readonly (readonly string[])[]): Mes
 }
 
 /**
+ * The mode a broadcast goes in until its sender picks one, from the capabilities of each live
+ * session selected: BTW, the broadcast's own default, when every one of them advertises it, else
+ * Aside when every one advertises that - so a selection that holds a Claude Code session, which
+ * takes only Aside, reaches it rather than leaving it out. A session that advertises no mode takes
+ * none and does not decide it. Otherwise, or with nobody live, it is BTW, and the composer names
+ * who that leaves out.
+ */
+export function broadcastDelivery(
+  capabilities: readonly (readonly string[])[]
+): MessageDeliveryMode {
+  const taking = capabilities.filter((list) => list.length > 0);
+  const everyone = (mode: MessageDeliveryMode) => taking.every((list) => list.includes(mode));
+  return taking.length > 0 && !everyone("btw") && everyone("aside") ? "aside" : "btw";
+}
+
+/**
  * The one rule every delivery surface applies, so the dashboard cannot promise on one card what
  * it contradicts on another. Four surfaces render a delivery attempt — the targeted-message
  * card, the comment thread's "Mention deliveries" list, the issue event feed, and the broadcast

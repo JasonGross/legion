@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 
 import {
+  broadcastDelivery,
   type DeliveryOutcome,
   duplicateText,
   isSafeRetry,
@@ -154,4 +155,18 @@ test("a plain message is a Send unless every addressed session takes Aside and o
   expect(plainDelivery([["btw"]])).toBe("steer");
   expect(plainDelivery([claude, []])).toBe("aside");
   expect(plainDelivery([[]])).toBe("steer");
+});
+
+test("a broadcast is a BTW unless every selected session takes Aside and one refuses BTW", () => {
+  const omp = ["aside", "btw", "steer"];
+  const claude = ["aside"];
+  expect(broadcastDelivery([])).toBe("btw");
+  expect(broadcastDelivery([omp])).toBe("btw");
+  expect(broadcastDelivery([claude])).toBe("aside");
+  expect(broadcastDelivery([omp, claude])).toBe("aside");
+  // A session with no mode decides nothing for the rest; one that takes neither leaves BTW, which
+  // the composer names as leaving it out.
+  expect(broadcastDelivery([claude, []])).toBe("aside");
+  expect(broadcastDelivery([[]])).toBe("btw");
+  expect(broadcastDelivery([claude, ["steer"]])).toBe("btw");
 });

@@ -55,7 +55,12 @@ import {
 } from "../../theme/classes";
 import { resolveAuthor } from "../conversation/authors";
 import type { ReplyTarget } from "../conversation/composer-model";
-import { capabilityLabel, MODE_LABELS, plainDelivery } from "../conversation/delivery";
+import {
+  broadcastDelivery,
+  capabilityLabel,
+  MODE_LABELS,
+  plainDelivery,
+} from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -963,6 +968,7 @@ function BroadcastComposer({
   agents,
   body,
   composed,
+  defaulted,
   delivery,
   onBody,
   onDelivery,
@@ -973,6 +979,8 @@ function BroadcastComposer({
   agents: readonly Agent[];
   body: string;
   composed: ComposedBroadcast;
+  /** Whether `delivery` is the selection's own mode rather than one the sender picked. */
+  defaulted: boolean;
   delivery: MessageDeliveryMode;
   onBody: (body: string) => void;
   onDelivery: (delivery: MessageDeliveryMode) => void;
@@ -982,6 +990,17 @@ function BroadcastComposer({
 }): ReactNode {
   const { plan } = composed;
   const { excluded, recipients } = plan;
+  // The selection's own mode, named when it is not the broadcast's usual BTW, so the reader knows
+  // what their words become: an Aside, because a selected session takes Aside and not BTW.
+  const asideOnly =
+    defaulted && delivery === "aside"
+      ? agents.filter(
+          (agent) =>
+            selected.has(agent.session_id) &&
+            agent.capabilities.includes("aside") &&
+            !agent.capabilities.includes("btw")
+        )
+      : [];
   // The server counts the `session_ids` it is sent - these recipients - against the shared limit
   // and refuses a send over it; saying so before Send saves the round trip. The notice line is
   // Send's reason when it refuses for the limit or for nobody to reach; otherwise it still bears
@@ -1052,6 +1071,13 @@ function BroadcastComposer({
         rows={3}
         value={body}
       />
+      {asideOnly.length > 0 ? (
+        <p className={composerLine}>
+          Sending as Aside:{" "}
+          {asideOnly.map((agent) => sessionLabel(agent.session_id, agent.title)).join(" and ")}{" "}
+          {asideOnly.length > 1 ? "do" : "does"} not advertise BTW.
+        </p>
+      ) : null}
       {sendState.notice === null ? null : (
         <p className={composerLine} id={noticeId}>
           {sendState.notice}
@@ -1120,7 +1146,13 @@ export function AgentsPage(): ReactNode {
   // refuses rather than replace it - the same test the queue uses to hold off opening a broadcast
   // while another is begun.
   const composition = useBroadcastComposition();
-  const { delivery, draft, selected, setSelected } = composition;
+  const { draft, selected, setSelected } = composition;
+  // Until the sender picks a mode, the broadcast goes in the one its selection takes: BTW, or
+  // Aside when a selected session takes Aside and not BTW (a Claude Code session).
+  const defaultDelivery = broadcastDelivery(
+    agents.flatMap((agent) => (selected.has(agent.session_id) ? [agent.capabilities] : []))
+  );
+  const delivery = composition.delivery ?? defaultDelivery;
   const composing = draft.trim() !== "" || selected.size > 0;
   const queue = useBroadcastQueue(composing);
   const restoreRefusal = composing
@@ -1331,7 +1363,8 @@ export function AgentsPage(): ReactNode {
             <BroadcastComposer
               agents={agents}
               body={draft}
-              composed={composedBroadcast(composition, agents)}
+              composed={composedBroadcast({ ...composition, delivery }, agents)}
+              defaulted={composition.delivery === null}
               delivery={delivery}
               onBody={composition.setDraft}
               onDelivery={composition.setDelivery}
