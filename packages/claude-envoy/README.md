@@ -70,6 +70,16 @@ events and sends them to the current Claude Code session as supported
   the check, for an allowlist an MDM profile delivers. A command line it cannot read counts as
   loaded, and so does a one-word one from a Claude Code that runs on Node, whose
   `process.title = "claude"` overwrites the arguments.
+
+  The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
+  off for the account (not signed in, or an account without the channels feature), for a
+  third-party provider (Bedrock, Vertex or Foundry), and for an organization whose managed settings
+  do not set `channelsEnabled: true`. It then shows
+  `--dangerously-load-development-channels ignored` (or `--channels ignored`) with the reason when
+  the session starts, and drops every notification. The server sees the flag on the command line,
+  counts the channel as loaded and still advertises Aside, so Dispatch records a message to that
+  session as sent while the model never sees it. If the session shows that warning, start it with
+  `ENVOY_CHANNEL_LOADED=0` so it advertises no delivery mode.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.
