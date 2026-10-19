@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
@@ -147,16 +147,29 @@ test("queryTmux answers undefined for a server that does not exist and for a pan
 
 test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
   const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
-  const stubborn = join(directory, "tmux")
-  writeFileSync(stubborn, '#!/bin/sh\ntrap "" TERM\nsleep 5\n', { mode: 0o755 })
-  const path = process.env["PATH"]
-  process.env["PATH"] = `${directory}:${path ?? ""}`
+  const marker = join(directory, "ran")
+  writeFileSync(join(directory, "tmux"), `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\nsleep 5\n`, {
+    mode: 0o755,
+  })
+  // A child of its own, so the stub is first on the PATH it starts with: execFileSync looks
+  // `tmux` up on the PATH the process was launched with.
+  const source = join(import.meta.dir, "../src/session-title.ts")
   const started = Date.now()
   try {
-    expect(queryTmux("/nonexistent/tmux.sock", "%0", "#{session_name}")).toBeUndefined()
-    expect(Date.now() - started).toBeLessThan(3_000)
+    const child = Bun.spawnSync(
+      [
+        process.execPath,
+        "-e",
+        `import { queryTmux } from ${JSON.stringify(source)}; process.stdout.write(String(queryTmux("/nonexistent/tmux.sock", "%0", "x")))`,
+      ],
+      { env: { ...process.env, PATH: `${directory}:${process.env["PATH"] ?? ""}` } },
+    )
+    const elapsed = Date.now() - started
+    expect(child.stdout.toString()).toBe("undefined")
+    expect(existsSync(marker)).toBe(true)
+    expect(elapsed).toBeGreaterThanOrEqual(1_000)
+    expect(elapsed).toBeLessThan(3_000)
   } finally {
-    process.env["PATH"] = path
     rmSync(directory, { recursive: true, force: true })
   }
 })

@@ -23,7 +23,8 @@ export type TmuxQuery = (socket: string, pane: string, format: string) => string
 // sessions apart no better than nothing, so only a window with it off lends its name. A window
 // index is never used: with `renumber-windows` on, tmux moves it after the title is worked out.
 // A pane of grouped sessions answers with whichever session of the group tmux picks, so the
-// group's name, which is the session the group was made from, stands in for it.
+// group's name stands in for it: the name of the session the group was made from, which tmux
+// keeps even after that session is renamed or ends.
 const TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
