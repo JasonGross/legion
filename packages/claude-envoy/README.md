@@ -53,23 +53,25 @@ events and sends them to the current Claude Code session as supported
   Claude Code or the model processed the event: the channel protocol has no processing ack. A plain
   direct send (`/v1/messages/send`) is a JetStream publish and gets no receipt: its reply subject is
   the publisher's acknowledgement inbox, and an empty receipt there fails the publish.
-- The server registers the session as self-subscribed with `capabilities: ["aside"]` when Claude
-  Code loaded it as a channel, and with no capability when it did not. It does not advertise `btw`
-  or `steer` (see "Intentionally omitted"). Claude Code never tells a server whether it loaded its
-  channel: the MCP handshake is the same either way, and a notification sent while it is not loaded
-  is dropped without a word, so Dispatch would record an Aside to that session as sent while the
-  model never saw it. The server therefore reads its `claude` process's command line
-  (`src/claude-channel.ts`) and applies Claude Code's gate as of 2.1.287: an entry naming this
-  plugin (from a bare MCP config, any `server:` entry) in `--channels`, or in
-  `--dangerously-load-development-channels` outside `-p`; the marketplace the plugin is installed
-  from; and, for `--channels`, an `allowedChannelPlugins` entry in the highest managed settings
-  source present (the cached `remote-settings.json`, else `managed-settings.json` with its
-  `managed-settings.d/` drop-ins). With no capability the listener refuses every targeted delivery
-  (`session … does not advertise aside`), Dispatch shows the session as taking no messages, and the
-  server says why on stderr and in its MCP instructions. `ENVOY_CHANNEL_LOADED=1` or `0` overrides
-  the check, for an allowlist an MDM profile delivers. A command line it cannot read counts as
-  loaded, and so does a one-word one from a Claude Code that runs on Node, whose
-  `process.title = "claude"` overwrites the arguments.
+- The server registers the session as self-subscribed with `capabilities: ["aside"]`, or
+  `["aside", "steer"]` in a Legion pane whose deliveries go to the bridge's inbox (below). It never
+  advertises `btw`, and a plain session does not advertise `steer` (see "Intentionally omitted").
+  A plain session whose channel Claude Code did not load registers no capability. Claude Code never
+  tells a server whether it loaded its channel: the MCP handshake is the same either way, and a
+  notification sent while it is not loaded is dropped without a word, so Dispatch would record an
+  Aside to that session as sent while the model never saw it. The server therefore reads its
+  `claude` process's command line (`src/claude-channel.ts`) and applies Claude Code's gate as of
+  2.1.287: an entry naming this plugin (from a bare MCP config, any `server:` entry) in
+  `--channels`, or in `--dangerously-load-development-channels` outside `-p`; the marketplace the
+  plugin is installed from; and, for `--channels`, an `allowedChannelPlugins` entry in the highest
+  managed settings source present (the cached `remote-settings.json`, else `managed-settings.json`
+  with its `managed-settings.d/` drop-ins). With no capability the listener refuses every targeted
+  delivery (`session … does not advertise aside`), Dispatch shows the session as taking no
+  messages, and the server says why on stderr and in its MCP instructions. `ENVOY_CHANNEL_LOADED=1`
+  or `0` overrides the check, for an allowlist an MDM profile delivers. A command line it cannot
+  read counts as loaded, and so does a one-word one from a Claude Code that runs on Node, whose
+  `process.title = "claude"` overwrites the arguments. A Legion pane whose deliveries go to the
+  bridge's inbox needs no channel, so the check does not apply there.
 
   The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
   off for the account (not signed in, or an account without the channels feature), for a
@@ -162,11 +164,34 @@ on every `SessionStart` (startup, resume, clear, compact, fork) and `SubagentSta
 `dispatch-brainstorming`, which the session loads by name.
 
 `envoy`, `dispatch`, `dispatch-first` and `dispatch-brainstorming` are the four a standalone Claude Code session uses. The other root skills
-stay out: they belong to Legion's roles (the architect, controller, oracle and retro skills, and the
-phase workers' `legion-worker` and `ce-simplify-code`) and to the reviewer's `thermonuclear-*`
-pair, and those run on Oh My Pi (`skills/AGENTS.md`). The `thermonuclear-*` rubrics also ship in
-the sjawhar@sjawhar plugin (sjawhar/dotfiles marketplace). Link another root skill here only when
-a standalone Claude Code session needs it.
+stay out of this plugin: they belong to Legion's roles (the architect, controller, oracle and retro
+skills, and the phase workers' `legion-worker` and `ce-simplify-code`) and to the reviewer's
+`thermonuclear-*` pair (`skills/AGENTS.md`). A phase worker on Claude Code gets them from the
+generated `legion/` plugin (below). The `thermonuclear-*` rubrics also ship in the sjawhar@sjawhar
+plugin (sjawhar/dotfiles marketplace). Link another root skill here only when a standalone Claude
+Code session needs it.
+
+## Legion phase workers
+
+A Legion daemon can run a phase worker (planner, implementer, tester, reviewer or merger) on
+Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux runtime only; see
+`docs/deployment.md`, "Phase workers on Claude Code"). The daemon launches
+`legion claude-bridge -- claude -p …` with two plugin directories, this package and its generated
+`legion/`, and a per-claim `CLAUDE_CONFIG_DIR`. In that pane the MCP server:
+
+- registers the session with the daemon once its transcript exists, claims the issue's Envoy role
+  and reports ready (`src/legion-claim.ts`, over the claim boot `@sjawhar/pi-legion` shares);
+- serves the `legion` tool: `read_record`, `handoff_complete` and `request_backward_move`, the
+  phase ops `@sjawhar/pi-legion`'s tool serves, on the same schema and executor
+  (`src/legion-tool.ts`);
+- hands each Envoy delivery to the bridge's socket (`LEGION_CLAUDE_INBOX`), which sends it as a
+  user turn, since print mode delivers no channel notification (`src/legion-inbox.ts`): the bridge
+  starts a turn with it when Claude Code is idle, and sends it as the next user message of the
+  running turn otherwise. So the session advertises `steer` (Dispatch's Send) beside `aside`, and
+  the bridge handles both alike.
+
+`legion/` is generated by `scripts/build.ts` from Legion's worker skills and task agents; rebuild it
+with the bundle and never edit it by hand. A standalone Claude Code session doesn't load it.
 
 ## The bundle
 
@@ -284,12 +309,13 @@ consent preconfigured and must not depend on local dialogs.
 
 ## Intentionally omitted
 
-- **Targeted BTW:** the channel registers only `aside`. A channel notification has no model or
+- **Targeted BTW:** no session advertises `btw`. A channel notification has no model or
   Claude Code acknowledgement, so advertising BTW would promise an automatic correlated Dispatch
   reply that does not exist. Add it only with a server-owned pending-delivery state and explicit
   reply tool design.
-- **Steer:** Claude Code queues channel notifications for the model's next turn, so a steer cannot
-  be honoured any differently from an aside; the session does not advertise it.
+- **Steer outside a Legion pane:** Claude Code queues channel notifications for the model's next
+  turn, so a steer cannot be honoured any differently from an aside; a session whose deliveries
+  are channel notifications does not advertise it.
 - **Permission relay:** the server does not declare `claude/channel/permission`. It has no
   sender-authenticated reply path or reply-ack design for remote permission decisions; declaring
   one would let unauthenticated Envoy payloads approve tool use. Dispatch asks stay on Dispatch.
