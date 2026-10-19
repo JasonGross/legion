@@ -231,4 +231,17 @@ package api
 // repository's `default`, and `refused`, each mapped repository left out with its `reason`). A
 // plugin at 30 reads the state with a strict schema that knows none of these fields, so it
 // refuses the state.
-const DaemonAPIVersion = 31
+//
+// 32: sjawhar/legion#1986 (the repository cache) -- the daemon runs one repository cache pod per
+// served repository, whose one container is the image's `legion workspace-init cache`, and every
+// issue pod's `workspace-init fetch` is told its repository's cache (`LEGION_REPOSITORY_CACHE_URL`)
+// and that cache's bearer token (`LEGION_REPOSITORY_CACHE_TOKEN_FILE`), and fills a fresh feed
+// from that cache alone, verified, fetching only the delta from GitHub; its `workspace-init
+// provision` makes the issue's clone shared with the feed, which now lives on the issue's own
+// volume. An image whose `legion` was built before 32 exits 2 on the unknown subcommand in every
+// cache pod, and its fetch clones from GitHub, ignoring the cache, so the daemon's image probe,
+// which holds the image's pi-legion to this number, refuses such an image at boot instead. The
+// state's `repositories` gains `cache` on each mapped repository under the Kubernetes runtime, with
+// its `state`, and `caches`, the caches of repositories the mapping no longer names, each with
+// `retainedUntil`, which a plugin at 31 reads with a strict schema that knows neither.
+const DaemonAPIVersion = 32
