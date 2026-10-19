@@ -43196,11 +43196,12 @@ function oneLine(value) {
 }
 function queryTmux(pane, format) {
   try {
-    return execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
+    const answer = execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: TMUX_TIMEOUT_MS
     });
+    return answer.trim() === "" ? undefined : answer;
   } catch {
     return;
   }

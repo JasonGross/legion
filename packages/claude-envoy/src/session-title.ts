@@ -36,14 +36,19 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim()
 }
 
-/** `tmux display-message -p -t <pane> <format>`; undefined when tmux is missing, slow or refuses. */
+/**
+ * `tmux display-message -p -t <pane> <format>`; undefined when tmux is missing, slow or refuses,
+ * or prints nothing: a running tmux server answers a pane it does not have with an empty line and
+ * exit status 0 (tmux 3.7b), not an error.
+ */
 export function queryTmux(pane: string, format: string): string | undefined {
   try {
-    return execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
+    const answer = execFileSync("tmux", ["display-message", "-p", "-t", pane, format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: TMUX_TIMEOUT_MS,
     })
+    return answer.trim() === "" ? undefined : answer
   } catch {
     return undefined
   }
