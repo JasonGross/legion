@@ -3,11 +3,21 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
+import {
+  processAncestors,
+  queryTmux,
+  sessionTitle,
+  type TmuxQuery,
+  tmuxPaneTitle,
+} from "../src/session-title"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
 const SERVER_PID = "4242"
 const TMUX = `/tmp/tmux-1000/default,${SERVER_PID},0`
+/** The pane's first process, and this session's ancestors, which hold it. */
+const PANE_PID = "777"
+const ANCESTORS: ReadonlySet<string> = new Set(["900", "800", PANE_PID])
+const ours = () => ANCESTORS
 
 /** A tmux server `pid` that answers every query with a pane in `session`, its window `window`
  *  with `automatic-rename` `automatic`, in group `group`, tab-joined as `display-message -p`
@@ -16,12 +26,16 @@ function tmuxAnswering(
   session: string,
   window: string,
   automatic: string,
-  { group = "", pid = SERVER_PID }: { group?: string; pid?: string } = {},
+  {
+    group = "",
+    pid = SERVER_PID,
+    panePid = PANE_PID,
+  }: { group?: string; pid?: string; panePid?: string } = {},
 ): TmuxQuery & { readonly asked: string[][] } {
   const asked: string[][] = []
   const query = (socket: string, pane: string) => {
     asked.push([socket, pane])
-    return `${[session, window, automatic, group, pid].join("\t")}\n`
+    return `${[session, window, automatic, group, pid, panePid].join("\t")}\n`
   }
   return Object.assign(query, { asked })
 }
@@ -30,11 +44,11 @@ const noTmux: TmuxQuery = () => {
   throw new Error("tmux must not be asked")
 }
 
-const paneTitle = (query: TmuxQuery) => tmuxPaneTitle("s", SERVER_PID, "%3", query)
+const paneTitle = (query: TmuxQuery) => tmuxPaneTitle("s", SERVER_PID, "%3", ANCESTORS, query)
 
 test("ENVOY_SESSION_TITLE names the session, ahead of tmux, on one line", () => {
   const title = sessionTitle(
-    { ENVOY_SESSION_TITLE: "  review\n  the  listener ", TMUX, TMUX_PANE: "%3" },
+    { ENVOY_SESSION_TITLE: "  review\n  the \u0007 listener ", TMUX, TMUX_PANE: "%3" },
     "/work/legion",
     noTmux,
   )
@@ -43,12 +57,22 @@ test("ENVOY_SESSION_TITLE names the session, ahead of tmux, on one line", () => 
 })
 
 test("a blank or invisible ENVOY_SESSION_TITLE falls through to tmux, asked of the server TMUX names", () => {
-  for (const blank of ["  ", "\u200b", " \u200b\u2060 "]) {
+  for (const blank of [
+    "  ",
+    "\u200b",
+    " \u200b\u2060 ",
+    "\u0001",
+    "\u001b",
+    "\ufe0f",
+    "\u3164",
+    "\u2800",
+  ]) {
     const tmux = tmuxAnswering("work", "review", "0")
     const title = sessionTitle(
       { ENVOY_SESSION_TITLE: blank, TMUX, TMUX_PANE: "%3" },
       "/work/legion",
       tmux,
+      ours,
     )
     expect(title(SESSION_ID)).toBe("work:review 3084299d")
     expect(tmux.asked).toEqual([["/tmp/tmux-1000/default", "%3"]])
@@ -57,7 +81,12 @@ test("a blank or invisible ENVOY_SESSION_TITLE falls through to tmux, asked of t
 
 test("the socket is TMUX up to its last two commas, so a path holding a comma still names it", () => {
   const tmux = tmuxAnswering("work", "review", "0")
-  sessionTitle({ TMUX: `/tmp/a,b/default,${SERVER_PID},0`, TMUX_PANE: "%3" }, "/work/legion", tmux)
+  sessionTitle(
+    { TMUX: `/tmp/a,b/default,${SERVER_PID},0`, TMUX_PANE: "%3" },
+    "/work/legion",
+    tmux,
+    ours,
+  )
   expect(tmux.asked).toEqual([["/tmp/a,b/default", "%3"]])
 })
 
@@ -66,7 +95,7 @@ test("a server started again on the same socket lends no name: its pane ids are 
   // again, to someone else's pane.
   const restarted = tmuxAnswering("unrelated", "secret", "0", { pid: "9999" })
   expect(paneTitle(restarted)).toBeUndefined()
-  expect(sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", restarted)(SESSION_ID)).toBe(
+  expect(sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", restarted, ours)(SESSION_ID)).toBe(
     "legion 3084299d",
   )
 })
@@ -86,8 +115,8 @@ test("a pane of grouped sessions is named after the group, whichever session tmu
 
 test("a tmux too old to expand the format lends no name", () => {
   const unexpanded: TmuxQuery = () =>
-    "#{session_name}\t#{window_name}\t#{automatic-rename}\t#{session_group}\t#{pid}\n"
-  expect(tmuxPaneTitle("s", "#{pid}", "%3", unexpanded)).toBeUndefined()
+    "#{session_name}\t#{window_name}\t#{automatic-rename}\t#{session_group}\t#{pid}\t#{pane_pid}\n"
+  expect(tmuxPaneTitle("s", "#{pid}", "%3", new Set(["#{pane_pid}"]), unexpanded)).toBeUndefined()
 })
 
 test("an automatically named window reads as the session alone, never its index", () => {
@@ -106,6 +135,7 @@ test("a session named only by digits lends no name in a window nobody named, so 
       { TMUX, TMUX_PANE: "%3" },
       "/work/legion",
       tmuxAnswering("0", "claude", "1"),
+      ours,
     )(SESSION_ID),
   ).toBe("legion 3084299d")
   // A window someone named still names it.
@@ -114,7 +144,7 @@ test("a session named only by digits lends no name in a window nobody named, so 
 
 test("sessions sharing a tmux window or session keep apart by their short ids", () => {
   const tmux = tmuxAnswering("split", "review", "0")
-  const title = sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", tmux)
+  const title = sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", tmux, ours)
   expect(title("aaaaaaaa-1111")).toBe("split:review aaaaaaaa")
   expect(title("bbbbbbbb-2222")).toBe("split:review bbbbbbbb")
 })
@@ -125,19 +155,20 @@ test("outside tmux, or when tmux cannot answer, the title is the project directo
   expect(sessionTitle({ TMUX_PANE: "%3" }, "/work/legion", noTmux)(SESSION_ID)).toBe(
     "legion 3084299d",
   )
-  expect(sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", () => undefined)(SESSION_ID)).toBe(
-    "legion 3084299d",
-  )
+  expect(
+    sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", () => undefined, ours)(SESSION_ID),
+  ).toBe("legion 3084299d")
   expect(
     sessionTitle(
       { TMUX, TMUX_PANE: "%3" },
       "/work/legion",
       tmuxAnswering("", "zsh", "1"),
+      ours,
     )(SESSION_ID),
   ).toBe("legion 3084299d")
-  expect(sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", () => "work\n")(SESSION_ID)).toBe(
-    "legion 3084299d",
-  )
+  expect(
+    sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", () => "work\n", ours)(SESSION_ID),
+  ).toBe("legion 3084299d")
 })
 
 test("the short id follows the id it is given, so a /clear handoff's new id shows", () => {
@@ -151,7 +182,23 @@ test("queryTmux answers undefined for a server that does not exist", () => {
   expect(queryTmux("/nonexistent/tmux.sock", "%0", "#{session_name}")).toBeUndefined()
 })
 
-// These two drive a real tmux server, and skip without one, as the tmux runtime's own tests do.
+test("a TMUX_PANE left over from elsewhere names no pane but this session's own", () => {
+  // tmux hands a popup or run-shell job the TMUX_PANE its server was started with, which names a
+  // pane this session is not in.
+  const elsewhere = tmuxAnswering("other", "secret", "0", { panePid: "555" })
+  expect(paneTitle(elsewhere)).toBeUndefined()
+  expect(sessionTitle({ TMUX, TMUX_PANE: "%3" }, "/work/legion", elsewhere, ours)(SESSION_ID)).toBe(
+    "legion 3084299d",
+  )
+})
+
+test("processAncestors holds this process and its parent", () => {
+  const chain = processAncestors(process.pid)
+  expect(chain.has(String(process.pid))).toBe(true)
+  expect(chain.has(String(process.ppid))).toBe(true)
+})
+
+// This one drives a real tmux server, and skips without one, as the tmux runtime's own tests do.
 const hasTmux = Bun.which("tmux") !== null
 
 test.skipIf(!hasTmux)(
@@ -166,11 +213,23 @@ test.skipIf(!hasTmux)(
       const pid = execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], {
         encoding: "utf8",
       }).trim()
-      const pane = execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pane_id}"], {
-        encoding: "utf8",
-      }).trim()
-      expect(tmuxPaneTitle(socket, pid, pane)).toBe("probe")
-      expect(tmuxPaneTitle(socket, "1", pane)).toBeUndefined()
+      const [pane = "", panePid = ""] = execFileSync(
+        "tmux",
+        ["-S", socket, "display-message", "-p", "#{pane_id}\t#{pane_pid}"],
+        { encoding: "utf8" },
+      )
+        .trim()
+        .split("\t")
+      // Unbounded, unlike queryTmux: a loaded machine can take tmux past one second, and this
+      // test is about reading the real server's answer, not the bound.
+      const unbounded: TmuxQuery = (at, target, format) =>
+        execFileSync("tmux", ["-S", at, "display-message", "-p", "-t", target, format], {
+          encoding: "utf8",
+        })
+      expect(tmuxPaneTitle(socket, pid, pane, new Set([panePid]), unbounded)).toBe("probe")
+      expect(tmuxPaneTitle(socket, "1", pane, new Set([panePid]), unbounded)).toBeUndefined()
+      // A pane whose process is not one of this session's ancestors is not this session's.
+      expect(tmuxPaneTitle(socket, pid, pane, new Set(["1"]), unbounded)).toBeUndefined()
     } finally {
       execFileSync("tmux", ["-S", socket, "kill-server"])
       rmSync(directory, { recursive: true, force: true })

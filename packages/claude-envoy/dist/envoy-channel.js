@@ -43181,18 +43181,51 @@ async function serveEnvoyOff(serverInfo, refusal) {
 
 // src/session-title.ts
 import { execFileSync } from "child_process";
+import { readFileSync as readFileSync3 } from "fs";
 import { basename } from "path";
 var TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
   "#{automatic-rename}",
   "#{session_group}",
-  "#{pid}"
+  "#{pid}",
+  "#{pane_pid}"
 ].join("\t");
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
+var MAX_ANCESTORS = 64;
 function oneLine(value) {
-  return value.replace(/\s+/g, " ").trim();
+  return value.replace(/[\s\p{Cc}]+/gu, " ").trim();
+}
+function visible(value) {
+  return value.replace(/[\s\p{C}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== "";
+}
+function parentPid(pid) {
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+      const parent2 = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      return Number.isInteger(parent2) ? parent2 : undefined;
+    }
+    const parent = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: TMUX_TIMEOUT_MS
+    }).trim());
+    return Number.isInteger(parent) ? parent : undefined;
+  } catch {
+    return;
+  }
+}
+function processAncestors(pid) {
+  const chain = new Set;
+  let current = pid;
+  while (current !== undefined && current > 1 && chain.size < MAX_ANCESTORS) {
+    if (chain.has(String(current)))
+      break;
+    chain.add(String(current));
+    current = parentPid(current);
+  }
+  return chain;
 }
 function queryTmux(socket, pane, format) {
   try {
@@ -43207,12 +43240,12 @@ function queryTmux(socket, pane, format) {
     return;
   }
 }
-function tmuxPaneTitle(socket, serverPid, pane, query = queryTmux) {
+function tmuxPaneTitle(socket, serverPid, pane, ancestors, query = queryTmux) {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
-  if (fields === undefined || fields.length < 5)
+  if (fields === undefined || fields.length < 6)
     return;
-  const [name = "", window2 = "", automaticRename, group = "", pid] = fields.map(oneLine);
-  if (pid !== serverPid)
+  const [name = "", window2 = "", automaticRename, group = "", pid, panePid = ""] = fields.map(oneLine);
+  if (pid !== serverPid || !ancestors.has(panePid))
     return;
   const session = group === "" ? name : group;
   if (session === "" || session.startsWith("#{"))
@@ -43222,9 +43255,9 @@ function tmuxPaneTitle(socket, serverPid, pane, query = queryTmux) {
   }
   return /^[0-9]+$/.test(session) ? undefined : session;
 }
-function sessionTitle(environment, directory, query = queryTmux) {
+function sessionTitle(environment, directory, query = queryTmux, ancestors = () => processAncestors(process.pid)) {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
-  if (explicit !== undefined && explicit.replace(/[\s\p{Cf}]/gu, "") !== "") {
+  if (explicit !== undefined && visible(explicit)) {
     const title = oneLine(explicit);
     return () => title;
   }
@@ -43232,7 +43265,7 @@ function sessionTitle(environment, directory, query = queryTmux) {
   const socket = parts.slice(0, -2).join(",");
   const serverPid = parts.at(-2) ?? "";
   const pane = configuredValue(environment.TMUX_PANE)?.trim();
-  const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, query)) ?? (basename(directory) || directory);
+  const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, ancestors(), query)) ?? (basename(directory) || directory);
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
 

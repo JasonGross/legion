@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { basename } from "node:path"
 import { configuredValue } from "./claude-session"
 
@@ -25,22 +26,66 @@ export type TmuxQuery = (socket: string, pane: string, format: string) => string
 // A pane of grouped sessions answers with whichever session of the group tmux picks, so the
 // group's name stands in for it, which tmux keeps even after the sessions are renamed or end.
 // `pid` is the server's: a pane id names a pane only on the server that gave it out, and a server
-// started again on the same socket gives out the same ids.
+// started again on the same socket gives out the same ids. `pane_pid` is the pane's first process:
+// tmux hands a popup, `run-shell` job or hook a `TMUX_PANE` left over from wherever the server was
+// started, so a pane is this session's only when its process is one of this session's ancestors.
 const TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
   "#{automatic-rename}",
   "#{session_group}",
   "#{pid}",
+  "#{pane_pid}",
 ].join("\t")
 
 /** Bounds the one tmux call the server makes as it starts. */
 const TMUX_TIMEOUT_MS = 1_000
-
 const SHORT_ID_LENGTH = 8
 
+/** How many parents `processAncestors` follows before it stops. */
+const MAX_ANCESTORS = 64
+
 function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim()
+  return value.replace(/[\s\p{Cc}]+/gu, " ").trim()
+}
+
+/** Whether `value` holds a character that shows: not whitespace, a control or format character,
+ *  an ignorable code point, or the blank braille pattern. */
+function visible(value: string): boolean {
+  return value.replace(/[\s\p{C}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== ""
+}
+
+/** The parent of process `pid`, or undefined when it cannot be read. */
+function parentPid(pid: number): number | undefined {
+  try {
+    if (process.platform === "linux") {
+      // The command name, in parentheses, may hold spaces; the parent is the second field after it.
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+      const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+      return Number.isInteger(parent) ? parent : undefined
+    }
+    const parent = Number(
+      execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: TMUX_TIMEOUT_MS,
+      }).trim(),
+    )
+    return Number.isInteger(parent) ? parent : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `pid` and its ancestors, nearest first, as far as they can be read. */
+export function processAncestors(pid: number): ReadonlySet<string> {
+  const chain = new Set<string>()
+  let current: number | undefined = pid
+  while (current !== undefined && current > 1 && chain.size < MAX_ANCESTORS) {
+    if (chain.has(String(current))) break
+    chain.add(String(current))
+    current = parentPid(current)
+  }
+  return chain
 }
 
 /**
@@ -71,22 +116,24 @@ export function queryTmux(socket: string, pane: string, format: string): string 
 /**
  * The tmux name of `pane` on the server at `socket` whose process is `serverPid`: `session:window`
  * for a window whose `automatic-rename` is off, else the tmux session's name. Undefined when tmux
- * cannot say, when another server now answers on that socket, and for a session named only by
- * digits (plain `tmux` names its first one `0`) in a window nobody named, since that says nothing
- * on any machine.
+ * cannot say, when another server now answers on that socket, when the pane's process is not in
+ * `ancestors` (the pane is not this session's), and for a session named only by digits (plain
+ * `tmux` names its first one `0`) in a window nobody named, since that says nothing on any machine.
  */
 export function tmuxPaneTitle(
   socket: string,
   serverPid: string,
   pane: string,
+  ancestors: ReadonlySet<string>,
   query: TmuxQuery = queryTmux,
 ): string | undefined {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)
     ?.replace(/\r?\n$/, "")
     .split("\t")
-  if (fields === undefined || fields.length < 5) return undefined
-  const [name = "", window = "", automaticRename, group = "", pid] = fields.map(oneLine)
-  if (pid !== serverPid) return undefined
+  if (fields === undefined || fields.length < 6) return undefined
+  const [name = "", window = "", automaticRename, group = "", pid, panePid = ""] =
+    fields.map(oneLine)
+  if (pid !== serverPid || !ancestors.has(panePid)) return undefined
   const session = group === "" ? name : group
   // A tmux too old to expand a format prints it as it was sent.
   if (session === "" || session.startsWith("#{")) return undefined
@@ -100,18 +147,20 @@ export function tmuxPaneTitle(
  * The title this session registers with the Envoy listener, which Dispatch's Agents page shows in
  * place of the session id: `ENVOY_SESSION_TITLE`; else a name and the current id's first eight
  * characters, the name being the pane's tmux name inside tmux (`TMUX` and `TMUX_PANE`, asked of
- * the server `TMUX` names) and the project directory's name otherwise. The short id keeps two
- * sessions that share a tmux window or session apart. The name is worked out once, as the server
- * starts: a tmux rename after that shows on the next start.
+ * the server `TMUX` names, for a pane whose process is in `ancestors`, this process's own chain
+ * by default) and the project directory's name otherwise. The short id keeps two sessions that
+ * share a tmux window or session apart. The name is worked out once, as the server starts: a tmux
+ * rename after that shows on the next start.
  */
 export function sessionTitle(
   environment: SessionTitleEnvironment,
   directory: string,
   query: TmuxQuery = queryTmux,
+  ancestors: () => ReadonlySet<string> = () => processAncestors(process.pid),
 ): SessionTitle {
   const explicit = configuredValue(environment.ENVOY_SESSION_TITLE)
-  // A title of only invisible characters (a zero-width space) would show as a blank row.
-  if (explicit !== undefined && explicit.replace(/[\s\p{Cf}]/gu, "") !== "") {
+  // A title with nothing that shows (a zero-width space, a control character) would be a blank row.
+  if (explicit !== undefined && visible(explicit)) {
     const title = oneLine(explicit)
     return () => title
   }
@@ -123,7 +172,7 @@ export function sessionTitle(
   const name =
     (socket === "" || serverPid === "" || pane === undefined
       ? undefined
-      : tmuxPaneTitle(socket, serverPid, pane, query)) ??
+      : tmuxPaneTitle(socket, serverPid, pane, ancestors(), query)) ??
     (basename(directory) || directory)
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`
 }

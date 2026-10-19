@@ -14,7 +14,8 @@
   showing its session id: `ENVOY_SESSION_TITLE`; else a name and the session id's first eight
   characters. Inside tmux the name is `session:window` for a window whose `automatic-rename` is
   off, else the session (for grouped sessions, the group), asked of the tmux server `TMUX` names
-  and used only while that server's pid matches. Outside tmux, and for a session named only by
+  and used only while that server's pid matches and the pane's process is one of the session's own
+  ancestors. Outside tmux, and for a session named only by
   digits in a window nobody named, it is the project directory's name. It registered an empty
   title.
 - The MCP server lists `slack_post` beside the ten `envoy_*` tools (sjawhar/legion#1998), a reply

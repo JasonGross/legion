@@ -254,21 +254,24 @@ is substituted as the literal text, which used to register a session as the lite
 `ENVOY_SESSION_ID` only to use a controlled identity for QA (the smoke does).
 
 The session registers under a title, which Dispatch's Agents page shows in place of its session id:
-`ENVOY_SESSION_TITLE` when it is set and holds a visible character (`ENVOY_SESSION_TITLE='review the listener'
-claude`), on one line. Otherwise the title is a name and the first eight characters of the
-session id (`work:review 3084299d`, `legion 3084299d`), so two sessions in one tmux window, or in
-one project outside tmux, keep apart, and the id part follows the new id after `/clear`. Inside
-tmux (`TMUX` and `TMUX_PANE`, asked of the server `TMUX` names, and only while that server's pid is
-the one in `TMUX`, since a server started again on the socket gives out the same pane ids) the name is `session:window` for a
-window whose `automatic-rename` is off (one named with `rename-window` or `new-window -n`, one a
-program in it renamed through `allow-rename`, or any window where the tmux configuration turns it
-off), else the tmux session's name; in grouped sessions, the group's name, which tmux keeps
-even after the sessions are renamed or end. A window index is
-never used, since tmux moves it under `renumber-windows`. A session named only by digits (plain
-`tmux` names its first one `0`) in a window nobody named, and a session outside tmux, take the
-project directory's name. The server works the name out once as it starts, with at most one
-`tmux display-message` call bounded at one second, so a later tmux rename shows from the next
-start.
+`ENVOY_SESSION_TITLE` when it is set and holds a character that shows
+(`ENVOY_SESSION_TITLE='review the listener' claude`), on one line. Otherwise the title is a name and
+the first eight characters of the session id (`work:review 3084299d`, `legion 3084299d`), so two
+sessions in one tmux window, or in one project outside tmux, keep apart, and the id part follows
+the new id after `/clear`.
+
+Inside tmux the name is `session:window` for a window whose `automatic-rename` is off (one named
+with `rename-window` or `new-window -n`, one a program in it renamed through `allow-rename`, or any
+window where the tmux configuration turns it off), else the tmux session's name; in grouped
+sessions, the group's name, which tmux keeps even after the sessions are renamed or end. A window
+index is never used, since tmux moves it under `renumber-windows`. The server asks the tmux server
+`TMUX` names about the pane `TMUX_PANE` names, and uses the answer only when that server's pid is
+the one in `TMUX` (a server started again on the socket gives out the same pane ids) and the
+pane's process is one of the session's own ancestors (tmux hands a popup or `run-shell` job a
+`TMUX_PANE` left over from elsewhere). Otherwise, and for a session named only by digits (plain
+`tmux` names its first one `0`) in a window nobody named, the name is the project directory's.
+The server works the name out once as it starts, with at most one `tmux display-message` call
+bounded at one second, so a later tmux rename shows from the next start.
 
 `claude -p` can run a channel session, but it disables features that need terminal input, including
 multiple-choice questions and plan approval. Production Legion workers must have MCP and channel
