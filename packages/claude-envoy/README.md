@@ -259,8 +259,9 @@ claude`), on one line. Otherwise the title is a name and the first eight charact
 session id (`work:review 3084299d`, `legion 3084299d`), so two sessions in one tmux window, or in
 one project outside tmux, keep apart, and the id part follows the new id after `/clear`. Inside
 tmux (`TMUX` and `TMUX_PANE`, asked of the server `TMUX` names) the name is `session:window` for a
-window whose `automatic-rename` is off (one named with `rename-window` or `new-window -n`, or any
-window where the tmux configuration turns it off), else the tmux session's name. A window index is
+window whose `automatic-rename` is off (one named with `rename-window` or `new-window -n`, one a
+program in it renamed through `allow-rename`, or any window where the tmux configuration turns it
+off), else the tmux session's name; in grouped sessions, the group's name. A window index is
 never used, since tmux moves it under `renumber-windows`. A session named only by digits (plain
 `tmux` names its first one `0`) in a window nobody named, and a session outside tmux, take the
 project directory's name. The server works the name out once as it starts, with at most one

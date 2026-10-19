@@ -22,7 +22,14 @@ export type TmuxQuery = (socket: string, pane: string, format: string) => string
 // window left on it is named after the running command, `claude` in every pane, which tells
 // sessions apart no better than nothing, so only a window with it off lends its name. A window
 // index is never used: with `renumber-windows` on, tmux moves it after the title is worked out.
-const TMUX_PANE_FORMAT = ["#{session_name}", "#{window_name}", "#{automatic-rename}"].join("\t")
+// A pane of grouped sessions answers with whichever session of the group tmux picks, so the
+// group's name, which is the session the group was made from, stands in for it.
+const TMUX_PANE_FORMAT = [
+  "#{session_name}",
+  "#{window_name}",
+  "#{automatic-rename}",
+  "#{session_group}",
+].join("\t")
 
 /** Bounds the one tmux call the server makes as it starts. */
 const TMUX_TIMEOUT_MS = 1_000
@@ -43,7 +50,14 @@ export function queryTmux(socket: string, pane: string, format: string): string 
     const answer = execFileSync(
       "tmux",
       ["-S", socket, "display-message", "-p", "-t", pane, format],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: TMUX_TIMEOUT_MS },
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: TMUX_TIMEOUT_MS,
+        // A `tmux` that ignores SIGTERM (a wrapper script) would hold the server's start past the
+        // bound; SIGKILL cannot be ignored.
+        killSignal: "SIGKILL",
+      },
     )
     return answer.trim() === "" ? undefined : answer
   } catch {
@@ -66,8 +80,10 @@ export function tmuxPaneTitle(
     ?.replace(/\r?\n$/, "")
     .split("\t")
   if (fields === undefined || fields.length < 3) return undefined
-  const [session = "", window = "", automaticRename] = fields.map(oneLine)
-  if (session === "") return undefined
+  const [name = "", window = "", automaticRename, group = ""] = fields.map(oneLine)
+  const session = group === "" ? name : group
+  // A tmux too old to expand a format prints it as it was sent.
+  if (session === "" || session.startsWith("#{")) return undefined
   if (window !== "" && (automaticRename === "0" || automaticRename === "off")) {
     return `${session}:${window}`
   }

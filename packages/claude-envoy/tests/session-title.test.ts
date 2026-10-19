@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
@@ -54,6 +54,23 @@ test("a window whose automatic-rename is off lends its name", () => {
   expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work", "review", "0"))).toBe("work:review")
   // A tmux that prints the flag as on/off rather than 1/0.
   expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work", "review", "off"))).toBe("work:review")
+})
+
+test("a pane of grouped sessions is named after the group, whichever session tmux answers with", () => {
+  expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work-view", "review", "0", "work"))).toBe(
+    "work:review",
+  )
+  expect(tmuxPaneTitle("s", "%3", tmuxAnswering("work", "claude", "1", ""))).toBe("work")
+})
+
+test("a tmux too old to expand the format lends no name", () => {
+  expect(
+    tmuxPaneTitle(
+      "s",
+      "%3",
+      tmuxAnswering("#{session_name}", "#{window_name}", "#{automatic-rename}"),
+    ),
+  ).toBeUndefined()
 })
 
 test("an automatically named window reads as the session alone, never its index", () => {
@@ -124,6 +141,22 @@ test("queryTmux answers undefined for a server that does not exist and for a pan
     expect(queryTmux(socket, "probe:", "#{session_name}")).toBe("probe\n")
   } finally {
     execFileSync("tmux", ["-S", socket, "kill-server"])
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
+  const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+  const stubborn = join(directory, "tmux")
+  writeFileSync(stubborn, '#!/bin/sh\ntrap "" TERM\nsleep 5\n', { mode: 0o755 })
+  const path = process.env["PATH"]
+  process.env["PATH"] = `${directory}:${path ?? ""}`
+  const started = Date.now()
+  try {
+    expect(queryTmux("/nonexistent/tmux.sock", "%0", "#{session_name}")).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(3_000)
+  } finally {
+    process.env["PATH"] = path
     rmSync(directory, { recursive: true, force: true })
   }
 })

@@ -43182,7 +43182,12 @@ async function serveEnvoyOff(serverInfo, refusal) {
 // src/session-title.ts
 import { execFileSync } from "child_process";
 import { basename } from "path";
-var TMUX_PANE_FORMAT = ["#{session_name}", "#{window_name}", "#{automatic-rename}"].join("\t");
+var TMUX_PANE_FORMAT = [
+  "#{session_name}",
+  "#{window_name}",
+  "#{automatic-rename}",
+  "#{session_group}"
+].join("\t");
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
 function oneLine(value) {
@@ -43190,7 +43195,12 @@ function oneLine(value) {
 }
 function queryTmux(socket, pane, format) {
   try {
-    const answer = execFileSync("tmux", ["-S", socket, "display-message", "-p", "-t", pane, format], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: TMUX_TIMEOUT_MS });
+    const answer = execFileSync("tmux", ["-S", socket, "display-message", "-p", "-t", pane, format], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: TMUX_TIMEOUT_MS,
+      killSignal: "SIGKILL"
+    });
     return answer.trim() === "" ? undefined : answer;
   } catch {
     return;
@@ -43200,8 +43210,9 @@ function tmuxPaneTitle(socket, pane, query = queryTmux) {
   const fields = query(socket, pane, TMUX_PANE_FORMAT)?.replace(/\r?\n$/, "").split("\t");
   if (fields === undefined || fields.length < 3)
     return;
-  const [session = "", window2 = "", automaticRename] = fields.map(oneLine);
-  if (session === "")
+  const [name = "", window2 = "", automaticRename, group = ""] = fields.map(oneLine);
+  const session = group === "" ? name : group;
+  if (session === "" || session.startsWith("#{"))
     return;
   if (window2 !== "" && (automaticRename === "0" || automaticRename === "off")) {
     return `${session}:${window2}`;
