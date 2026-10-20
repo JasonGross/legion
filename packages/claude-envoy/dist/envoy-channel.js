@@ -46904,9 +46904,9 @@ function createChannelForwarder(connection, options) {
 
 // src/claude-channel.ts
 import { spawnSync } from "child_process";
-import { readdirSync, readFileSync as readFileSync3, readlinkSync as readlinkSync2 } from "fs";
-import { homedir as homedir2 } from "os";
-import { basename, join as join2, sep } from "path";
+import { readdirSync as readdirSync2, readFileSync as readFileSync4, readlinkSync as readlinkSync2 } from "fs";
+import { homedir as homedir3 } from "os";
+import { basename as basename2, join as join3, sep } from "path";
 var CHANNEL_FLAGS = {
   "--channels": false,
   "--dangerously-load-development-channels": true
@@ -47013,7 +47013,7 @@ function processCommandLine(pid, executable = processExecutable) {
   let commandLine2;
   if (process.platform === "linux") {
     try {
-      const argv = readFileSync3(`/proc/${pid}/cmdline`, "utf8").split("\x00").filter((argument) => argument !== "");
+      const argv = readFileSync4(`/proc/${pid}/cmdline`, "utf8").split("\x00").filter((argument) => argument !== "");
       commandLine2 = argv.length === 0 ? undefined : { argv, exact: true };
     } catch {
       commandLine2 = undefined;
@@ -47028,7 +47028,7 @@ function processCommandLine(pid, executable = processExecutable) {
   }
   if (commandLine2 === undefined || commandLine2.argv.length > 1)
     return commandLine2;
-  const program = basename(executable(pid) ?? "");
+  const program = basename2(executable(pid) ?? "");
   return program === "node" || program === "nodejs" ? undefined : commandLine2;
 }
 function installedMarketplace(bundlePath) {
@@ -47054,7 +47054,7 @@ function managedSettingsDirectory() {
 }
 function readChannelSettings(file2, nonEmpty2 = false) {
   try {
-    const value = JSON.parse(readFileSync3(file2, "utf8"));
+    const value = JSON.parse(readFileSync4(file2, "utf8"));
     if (typeof value !== "object" || value === null || Array.isArray(value))
       return;
     if (nonEmpty2 && Object.keys(value).length === 0)
@@ -47066,17 +47066,17 @@ function readChannelSettings(file2, nonEmpty2 = false) {
   }
 }
 function channelAllowlist(directories) {
-  const remote = readChannelSettings(join2(directories.configDirectory, "remote-settings.json"), true);
+  const remote = readChannelSettings(join3(directories.configDirectory, "remote-settings.json"), true);
   if (remote !== undefined)
     return remote.list;
-  const dropIns = join2(directories.managedDirectory, "managed-settings.d");
+  const dropIns = join3(directories.managedDirectory, "managed-settings.d");
   let dropInFiles = [];
   try {
-    dropInFiles = readdirSync(dropIns).filter((name) => name.endsWith(".json")).sort().map((name) => join2(dropIns, name));
+    dropInFiles = readdirSync2(dropIns).filter((name) => name.endsWith(".json")).sort().map((name) => join3(dropIns, name));
   } catch {
     dropInFiles = [];
   }
-  const lists = [join2(directories.managedDirectory, "managed-settings.json"), ...dropInFiles].map((file2) => readChannelSettings(file2)?.list).filter((list) => list !== undefined);
+  const lists = [join3(directories.managedDirectory, "managed-settings.json"), ...dropInFiles].map((file2) => readChannelSettings(file2)?.list).filter((list) => list !== undefined);
   return lists.length === 0 ? undefined : lists.flat();
 }
 function detectClaudeChannel(input) {
@@ -47085,7 +47085,7 @@ function detectClaudeChannel(input) {
     return { loaded: true };
   if (override === "0")
     return { loaded: false, why: "ENVOY_CHANNEL_LOADED=0" };
-  const configDirectory = input.environment["CLAUDE_CONFIG_DIR"]?.trim() || join2(homedir2(), ".claude");
+  const configDirectory = input.environment["CLAUDE_CONFIG_DIR"]?.trim() || join3(homedir3(), ".claude");
   const plugin = input.environment["CLAUDE_PLUGIN_ROOT"]?.trim() ? { name: "claude-envoy", marketplace: installedMarketplace(input.bundlePath) } : undefined;
   return claudeChannelGate({
     commandLine: processCommandLine(input.claudePid),
@@ -47110,7 +47110,7 @@ function claudeProjectDirectory(environment, fallback) {
 
 // src/session-identity.ts
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { dirname as dirname2, join as join3 } from "path";
+import { dirname as dirname2, join as join4 } from "path";
 var PersistedRole = exports_external.object({ session_id: exports_external.string().min(1), role: exports_external.string().min(1) });
 
 class SessionIdentity {
@@ -47128,13 +47128,13 @@ class SessionIdentity {
   }
 }
 function sessionHandoffDirectory(stateDirectory, claudePid) {
-  return join3(stateDirectory, "sessions", String(claudePid));
+  return join4(stateDirectory, "sessions", String(claudePid));
 }
 function sessionHandoffFile(stateDirectory, claudePid) {
-  return join3(sessionHandoffDirectory(stateDirectory, claudePid), "session-id");
+  return join4(sessionHandoffDirectory(stateDirectory, claudePid), "session-id");
 }
 function roleStateFile(stateDirectory, sessionId) {
-  return join3(stateDirectory, "roles", `${encodeURIComponent(sessionId)}.json`);
+  return join4(stateDirectory, "roles", `${encodeURIComponent(sessionId)}.json`);
 }
 async function readPersistedRole(roleFile) {
   try {
@@ -47178,7 +47178,7 @@ function processExists(pid) {
   }
 }
 async function pruneStaleSessionHandoffs(stateDirectory) {
-  const sessions = join3(stateDirectory, "sessions");
+  const sessions = join4(stateDirectory, "sessions");
   const entries = await readdir(sessions).catch((error48) => {
     if (hasErrnoCode(error48, "ENOENT"))
       return [];
@@ -47187,7 +47187,7 @@ async function pruneStaleSessionHandoffs(stateDirectory) {
   for (const entry of entries) {
     if (!/^\d+$/.test(entry) || processExists(Number(entry)))
       continue;
-    await rm(join3(sessions, entry), { recursive: true, force: true });
+    await rm(join4(sessions, entry), { recursive: true, force: true });
   }
 }
 
@@ -47238,7 +47238,7 @@ async function serveEnvoyOff(serverInfo, refusal) {
 
 // src/legion-claim.ts
 import { readdir as readdir2, stat } from "fs/promises";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 import { setTimeout as delay } from "timers/promises";
 
 // ../pi-shared/src/legion-claim-core.ts
@@ -47327,12 +47327,12 @@ function stopPane(why) {
   endPane();
 }
 async function waitForTranscript(configDir, sessionID, signal, pollMs = 100) {
-  const projects = join4(configDir, "projects");
+  const projects = join5(configDir, "projects");
   const name = `${sessionID}.jsonl`;
   for (;; ) {
     signal.throwIfAborted();
     for (const directory of await readdir2(projects).catch(() => [])) {
-      const file2 = join4(projects, directory, name);
+      const file2 = join5(projects, directory, name);
       if (await stat(file2).then((info) => info.isFile(), () => false))
         return file2;
     }
@@ -47580,8 +47580,8 @@ async function executeLegionTool(runtime, input) {
 
 // src/session-title.ts
 import { execFileSync } from "child_process";
-import { readFileSync as readFileSync4 } from "fs";
-import { basename as basename2 } from "path";
+import { readFileSync as readFileSync5 } from "fs";
+import { basename as basename3 } from "path";
 var TMUX_PANE_FORMAT = [
   "#{session_name}",
   "#{window_name}",
@@ -47603,7 +47603,7 @@ function visible(value) {
 function parentPid(pid) {
   try {
     if (process.platform === "linux") {
-      const stat2 = readFileSync4(`/proc/${pid}/stat`, "utf8");
+      const stat2 = readFileSync5(`/proc/${pid}/stat`, "utf8");
       const parent2 = Number(stat2.slice(stat2.lastIndexOf(")") + 2).split(" ")[1]);
       return Number.isInteger(parent2) ? parent2 : undefined;
     }
@@ -47662,7 +47662,7 @@ function sessionTitle(environment, directory, query = queryTmux, ownPane = (pane
   const socket = parts.slice(0, -2).join(",");
   const serverPid = parts.at(-2) ?? "";
   const pane = configuredValue(environment.TMUX_PANE)?.trim();
-  const directoryName = oneLine(basename2(directory) || directory);
+  const directoryName = oneLine(basename3(directory) || directory);
   const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ?? (visible(directoryName) ? directoryName : "session");
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
