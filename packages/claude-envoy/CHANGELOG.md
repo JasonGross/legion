@@ -23,7 +23,8 @@
   and used when that server's pid matches and the pane's process is one of the session's own
   ancestors. Otherwise (outside tmux, a refused or missing answer, or a session named only by
   digits in a window nobody named) it is the project directory's name. The `dispatch` command
-  stamps the same title on the session's Dispatch writes. It registered an empty title.
+  stamps the same title on the session's Dispatch writes (with inbound messages or Envoy off, for
+  the id the session starts with). It registered an empty title.
 - The MCP server lists `slack_post` beside the ten `envoy_*` tools (sjawhar/legion#1998), a reply
   in a Slack thread with the bot token the secrets broker grants (`LEGION_SLACK_BOT_TOKEN`).
 - A Legion phase worker can run on Claude Code (sjawhar/legion#2032). When `legion claude-bridge`

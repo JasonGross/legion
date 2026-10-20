@@ -98,6 +98,33 @@ test("the committed bundle starts without node_modules and, with no envoy.json, 
   }
 })
 
+test("with Envoy off the bundle still writes the session title the dispatch command stamps", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
+  try {
+    await cp(distDirectory, join(scratch, "dist"), { recursive: true })
+    const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+      cwd: scratch,
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        CLAUDE_CODE_SESSION_ID: "ses-off",
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        DISPATCH_STATE_DIR: join(scratch, "dispatch-state"),
+        ENVOY_SESSION_TITLE: "off but named",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(await run.exited).toBe(0)
+    expect(
+      await readFile(join(scratch, "dispatch-state", "sessions", "ses-off", "title"), "utf8"),
+    ).toBe("off but named")
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test("the dependency guard ignores comments and detects external module specifiers", async () => {
   const comments = [
     '// require("/tmp/node_modules/comment.js")',

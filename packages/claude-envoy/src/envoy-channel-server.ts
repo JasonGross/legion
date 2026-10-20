@@ -498,6 +498,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
+  /** Whether a failure to stamp the title has been reported since the last success. */
+  let stampFailureReported = false
 
   /**
    * Advertise the current id and topics; runs only inside `serialized`. The title is also stamped
@@ -513,10 +515,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       try {
         options.stampTitle(identity.id, title)
         stampedTitle = { sessionID: identity.id, title }
+        stampFailureReported = false
       } catch (error) {
-        process.stderr.write(
-          `envoy-channel: could not write the session title for the dispatch command (${messageFor(error)}); retrying every heartbeat, and the command names this session by its id\n`,
-        )
+        // Said once per failure run: every heartbeat retries it.
+        if (!stampFailureReported) {
+          stampFailureReported = true
+          process.stderr.write(
+            `envoy-channel: could not write the session title for the dispatch command (${messageFor(error)}); retrying every heartbeat, and the command names this session by its id\n`,
+          )
+        }
       }
     }
     await options.client.subscribe({
@@ -991,13 +998,46 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const { envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory })
   // Claude Code logs the server's stderr: why a section is off, once.
   if (notice !== null) process.stderr.write(`envoy-channel: ${notice}\n`)
+  // The title every registration sends, and the one the `dispatch` command stamps on this
+  // session's Dispatch writes. Both paths below stamp it, since a session whose inbound messages
+  // are off still runs that command.
+  const title = sessionTitle(
+    {
+      ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+      TMUX: process.env["TMUX"],
+      TMUX_PANE: process.env["TMUX_PANE"],
+    },
+    directory,
+  )
+  const stampTitle = (sessionId: string, value: string): void => {
+    writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), value)
+  }
+
+  /** Stamp the title for `sessionId` once, where nothing will register it. */
+  const stampOnce = (sessionId: string): void => {
+    try {
+      const own = title(sessionId)
+      if (own !== "") stampTitle(sessionId, own)
+    } catch (error) {
+      process.stderr.write(
+        `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}; the dispatch command names this session by its id\n`,
+      )
+    }
+  }
+  const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   if (!envoy.enabled) {
+    // The `dispatch` command still runs with Envoy off, so it still gets the session's title.
+    stampOnce(
+      claudeSessionId({
+        ENVOY_SESSION_ID: overrideSessionId,
+        CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"],
+      }),
+    )
     const refusal = `Envoy is off for this session: ${envoy.error ?? envoy.notice}`
     if (pane !== undefined) stopPane(`a Legion pane needs Envoy for its task; ${refusal}`)
     await serveEnvoyOff(MCP_SERVER_INFO, refusal)
     return
   }
-  const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   const identity = new SessionIdentity(
     claudeSessionId({
       ENVOY_SESSION_ID: overrideSessionId,
@@ -1063,21 +1103,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
   process.once("SIGHUP", stop)
   await server.connect(new StdioServerTransport())
 
-  // The title every registration sends, and the one the `dispatch` command stamps on this
-  // session's Dispatch writes. Both paths below stamp it, since a session whose inbound messages
-  // are off still runs that command.
-  const title = sessionTitle(
-    {
-      ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
-      TMUX: process.env["TMUX"],
-      TMUX_PANE: process.env["TMUX_PANE"],
-    },
-    directory,
-  )
-  const stampTitle = (sessionId: string, value: string): void => {
-    writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), value)
-  }
-
   let connection: ChannelForwarderConnection | undefined
   try {
     const { inbound } = envoy
@@ -1088,14 +1113,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         )
       }
       // No registration happens here, so the title is stamped directly.
-      try {
-        const own = title(identity.id)
-        if (own !== "") stampTitle(identity.id, own)
-      } catch (error) {
-        process.stderr.write(
-          `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}; the dispatch command names this session by its id\n`,
-        )
-      }
+      stampOnce(identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       connection = await connect({

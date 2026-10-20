@@ -47675,15 +47675,20 @@ async function startChannelSession(options) {
     };
   }
   let stampedTitle;
+  let stampFailureReported = false;
   const register = async () => {
     const title = options.title?.(identity.id) ?? "";
     if (options.stampTitle !== undefined && title !== "" && (stampedTitle?.sessionID !== identity.id || stampedTitle.title !== title)) {
       try {
         options.stampTitle(identity.id, title);
         stampedTitle = { sessionID: identity.id, title };
+        stampFailureReported = false;
       } catch (error48) {
-        process.stderr.write(`envoy-channel: could not write the session title for the dispatch command (${messageFor(error48)}); retrying every heartbeat, and the command names this session by its id
+        if (!stampFailureReported) {
+          stampFailureReported = true;
+          process.stderr.write(`envoy-channel: could not write the session title for the dispatch command (${messageFor(error48)}); retrying every heartbeat, and the command names this session by its id
 `);
+        }
       }
     }
     await options.client.subscribe({
@@ -48026,14 +48031,36 @@ async function runEnvoyChannelServer() {
   if (notice !== null)
     process.stderr.write(`envoy-channel: ${notice}
 `);
+  const title = sessionTitle({
+    ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+    TMUX: process.env["TMUX"],
+    TMUX_PANE: process.env["TMUX_PANE"]
+  }, directory);
+  const stampTitle = (sessionId, value) => {
+    writeSessionTitle(sessionDirectory(process.env, sessionId), value);
+  };
+  const stampOnce = (sessionId) => {
+    try {
+      const own = title(sessionId);
+      if (own !== "")
+        stampTitle(sessionId, own);
+    } catch (error48) {
+      process.stderr.write(`envoy-channel: could not write the session title for the dispatch command \u2014 ${messageFor(error48)}; the dispatch command names this session by its id
+`);
+    }
+  };
+  const overrideSessionId = process.env["ENVOY_SESSION_ID"];
   if (!envoy.enabled) {
+    stampOnce(claudeSessionId({
+      ENVOY_SESSION_ID: overrideSessionId,
+      CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"]
+    }));
     const refusal = `Envoy is off for this session: ${envoy.error ?? envoy.notice}`;
     if (pane !== undefined)
       stopPane(`a Legion pane needs Envoy for its task; ${refusal}`);
     await serveEnvoyOff(MCP_SERVER_INFO, refusal);
     return;
   }
-  const overrideSessionId = process.env["ENVOY_SESSION_ID"];
   const identity = new SessionIdentity(claudeSessionId({
     ENVOY_SESSION_ID: overrideSessionId,
     CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"]
@@ -48092,14 +48119,6 @@ async function runEnvoyChannelServer() {
   process.once("SIGINT", stop);
   process.once("SIGHUP", stop);
   await server.connect(new StdioServerTransport);
-  const title = sessionTitle({
-    ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
-    TMUX: process.env["TMUX"],
-    TMUX_PANE: process.env["TMUX_PANE"]
-  }, directory);
-  const stampTitle = (sessionId, value) => {
-    writeSessionTitle(sessionDirectory(process.env, sessionId), value);
-  };
   let connection;
   try {
     const { inbound } = envoy;
@@ -48107,14 +48126,7 @@ async function runEnvoyChannelServer() {
       if (pane !== undefined) {
         stopPane(`a Legion pane's task reaches it over NATS, and inbound messages are off: ${inbound.off}`);
       }
-      try {
-        const own = title(identity.id);
-        if (own !== "")
-          stampTitle(identity.id, own);
-      } catch (error48) {
-        process.stderr.write(`envoy-channel: could not write the session title for the dispatch command \u2014 ${messageFor(error48)}; the dispatch command names this session by its id
-`);
-      }
+      stampOnce(identity.id);
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off });
     } else {
       connection = await import_nats2.connect({
