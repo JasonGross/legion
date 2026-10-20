@@ -44895,11 +44895,11 @@ async function runEnvoyChannelServer() {
   }), directory);
   const stateDirectory = pluginStateDirectory();
   const inboxSocket = configuredValue(process.env[INBOX_VARIABLE]);
-  const channel = inboxSocket !== undefined ? { loaded: true } : detectClaudeChannel({
+  const channel = inboxSocket === undefined ? detectClaudeChannel({
     claudePid: process.ppid,
     bundlePath: process.argv[1] ?? "",
     environment: process.env
-  });
+  }) : { loaded: true };
   if (!channel.loaded) {
     process.stderr.write(`envoy-channel: Claude Code did not load this server as a channel: ${channel.why}; the session advertises no delivery mode, so Dispatch refuses messages to it instead of losing them
 `);

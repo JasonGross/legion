@@ -15,9 +15,11 @@ There is no Monitor and no native Claude messaging socket path. The server's too
 
 A session advertises the delivery modes its deliveries' path can honour, never `btw`, and none at
 all when its deliveries are channel notifications Claude Code did not load (`src/claude-channel.ts`;
-a Legion pane's deliveries go to the bridge's inbox instead, so the gate does not apply to it). One whose
+a Legion pane's go to the bridge's inbox instead, so the gate does not apply to it). One whose
 deliveries are channel notifications advertises `aside` alone (`CHANNEL_CAPABILITIES`): Claude Code
-queues a notification for the model's next turn, so a `steer` cannot be honoured. A Legion pane
+queues a notification for the model's next turn, so a `steer` cannot be honoured. It advertises
+nothing when Claude Code did not load the server as a channel (`src/claude-channel.ts`), since
+Claude Code would drop every notification. A Legion pane
 whose deliveries go to `legion claude-bridge`'s inbox advertises `aside` and `steer`
 (`INBOX_CAPABILITIES` in `src/legion-inbox.ts`): the bridge starts a turn with a delivery when
 Claude Code is idle and sends it as the next user message of the running turn otherwise. `btw`
@@ -83,12 +85,13 @@ Dispatch asks stay on Dispatch.
 - Pass a `ChannelInboundMessage` built field by field; a nats.js `Msg` exposes `subject`, `data`, and
   `reply` through prototype getters that an object spread silently drops. The forwarder decodes
   `data` once into `raw`; downstream code reads `raw`, never re-decodes.
-- Register the capabilities the delivery path honours, never `btw`, and none at all when the
-  channel path's channel is not loaded: `CHANNEL_CAPABILITIES` (`["aside"]`) for channel notifications,
-  which queue for the next turn, so a steer at the next tool boundary cannot be honoured;
+- Register the capabilities the delivery path honours, never `btw`: `CHANNEL_CAPABILITIES`
+  (`["aside"]`) for channel notifications, which queue for the next turn, so a steer at the next
+  tool boundary cannot be honoured, and none when Claude Code did not load the channel;
   `INBOX_CAPABILITIES` (`["aside", "steer"]`) when `LEGION_CLAUDE_INBOX` routes deliveries to the
-  bridge. Dispatch refuses a targeted delivery in a mode the session does not advertise, and a
-  message with no command goes in the mode the session takes (`plainDelivery`).
+  bridge, which needs no channel. Dispatch refuses a targeted delivery in a mode the session does
+  not advertise, and a message with no command goes in the mode the addressed sessions take
+  (`plainDelivery`), as a broadcast does (`broadcastDelivery`).
   The direct NATS receipt occurs immediately after notification enqueue; it cannot imply model
   processing because Claude Code does not acknowledge channel notifications.
 - Preserve the held role at `${CLAUDE_PLUGIN_DATA}/roles/<session-id>.json` (keyed by session id so

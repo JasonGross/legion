@@ -54,10 +54,9 @@ events and sends them to the current Claude Code session as supported
   direct send (`/v1/messages/send`) is a JetStream publish and gets no receipt: its reply subject is
   the publisher's acknowledgement inbox, and an empty receipt there fails the publish.
 - The server registers the session as self-subscribed with `capabilities: ["aside"]`, or
-  `["aside", "steer"]` in a Legion pane whose deliveries go to the bridge's inbox (below), and with
-  no capability at all when its deliveries are channel notifications Claude Code did not load (a
-  Legion pane's are not, so the check does not apply to it). It never advertises `btw`,
-  and a plain session does not advertise `steer` (see "Intentionally omitted"). Claude Code never
+  `["aside", "steer"]` in a Legion pane whose deliveries go to the bridge's inbox (below). It never
+  advertises `btw`, and a plain session does not advertise `steer` (see "Intentionally omitted").
+  A plain session whose channel Claude Code did not load registers no capability. Claude Code never
   tells a server whether it loaded its channel: the MCP handshake is the same either way, and a
   notification sent while it is not loaded is dropped without a word, so Dispatch would record an
   Aside to that session as sent while the model never saw it. The server therefore reads its
@@ -68,10 +67,11 @@ events and sends them to the current Claude Code session as supported
   managed settings source present (the cached `remote-settings.json`, else `managed-settings.json`
   with its `managed-settings.d/` drop-ins). With no capability the listener refuses every targeted
   delivery (`session … does not advertise aside`), Dispatch shows the session as taking no
-  messages, and the server says why on stderr and in its MCP instructions.
-  `ENVOY_CHANNEL_LOADED=1` or `0` overrides the check, for an allowlist an MDM profile delivers. A
-  command line it cannot read counts as loaded, and so does a one-word one from a Claude Code that
-  runs on Node, whose `process.title = "claude"` overwrites the arguments.
+  messages, and the server says why on stderr and in its MCP instructions. `ENVOY_CHANNEL_LOADED=1`
+  or `0` overrides the check, for an allowlist an MDM profile delivers. A command line it cannot
+  read counts as loaded, and so does a one-word one from a Claude Code that runs on Node, whose
+  `process.title = "claude"` overwrites the arguments. A Legion pane whose deliveries go to the
+  bridge's inbox needs no channel, so the check does not apply there.
 
   The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
   off for the account (not signed in, or an account without the channels feature), for a

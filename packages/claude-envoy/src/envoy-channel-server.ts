@@ -53,7 +53,7 @@ import {
   type ChannelInboundMessage,
   createChannelForwarder,
 } from "./channel-forwarder"
-import { detectClaudeChannel } from "./claude-channel"
+import { type ChannelGate, detectClaudeChannel } from "./claude-channel"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
 import {
@@ -972,20 +972,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
     directory,
   )
   const stateDirectory = pluginStateDirectory()
+  // The Legion bridge's inbox takes the events itself; otherwise they go to Claude Code's channel.
+  const inboxSocket = configuredValue(process.env[INBOX_VARIABLE])
   // Claude Code drops a notification from a channel it did not load without telling this server,
   // so such a session advertises no delivery mode and Dispatch refuses a message to it rather than
-  // reporting it delivered.
-  // A Legion pane's deliveries reach the model through the bridge's inbox (INBOX_VARIABLE), which
-  // the channel gate has no bearing on.
-  const inboxSocket = configuredValue(process.env[INBOX_VARIABLE])
-  const channel =
-    inboxSocket !== undefined
-      ? ({ loaded: true } as const)
-      : detectClaudeChannel({
+  // reporting it delivered. The bridge's inbox needs no channel.
+  const channel: ChannelGate =
+    inboxSocket === undefined
+      ? detectClaudeChannel({
           claudePid: process.ppid,
           bundlePath: process.argv[1] ?? "",
           environment: process.env,
         })
+      : { loaded: true }
   if (!channel.loaded) {
     process.stderr.write(
       `envoy-channel: Claude Code did not load this server as a channel: ${channel.why}; the session advertises no delivery mode, so Dispatch refuses messages to it instead of losing them\n`,
