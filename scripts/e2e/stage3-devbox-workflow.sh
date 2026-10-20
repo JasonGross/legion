@@ -9,8 +9,8 @@
 # LEGION_E2E_MODEL_GATEWAY_URL, the model gateway's Anthropic endpoint, and SMOKE_UPSTREAM_NATS,
 # the production Envoy NATS the GitHub bridge subscribes on, by its fully-qualified name. It needs
 # agent-tier secrets and the operator's own hawk login, with the keyring holding it unlocked: the
-# agents' model is Anthropic through the Hawk model gateway (lib/install-model-gateway.sh), the
-# route every devbox agent session uses, and no Anthropic key reaches a pane. The proof human's
+# agents' model is Anthropic through the Hawk model gateway (lib/install-model-gateway.sh), and no
+# Anthropic key reaches a pane; only a devbox whose sessions use that gateway can run it. The proof human's
 # reviews and merge are the devbox's ordinary gh (the dotfiles shim, acting as the sjawhar-agent
 # App), never a Legion App, so run the script from the operator's own Oh My Pi session, not a Legion
 # pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses to start otherwise
@@ -228,8 +228,10 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
+# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
+# legion.yaml.
 projects:
-  $project: { repo: $repo }
+  $project: {}
 gates:
   design: root-issues
 admission_cap: 2
@@ -486,6 +488,25 @@ assert_ready_gate_closed() {
     .issues[$issue].phase == "merging" and .issues[$issue].designGate.currentVersion > .issues[$issue].designGate.approvedVersion
   ' "$file" >/dev/null
 }
+# await_tree_suspended ISSUE WHAT waits for ISSUE's tree architect to be suspended once its tree
+# lingers. The daemon holds that suspension for the architect's turn and names it no deadline
+# (packages/daemon/internal/supervise/suspend.go, holdSuspension), so the wait's bound is the
+# proof's turn budget, phase_seconds. A timeout prints the claim as `legion claims list` shows it:
+# working with its suspension held is a turn still running; idle and held, a stop the runtime keeps
+# refusing; neither suspended nor held, no suspension held for it (a start dropped the hold, or a
+# daemon restart forgot it before the outbox asked again).
+suspension_issue=
+await_tree_suspended() {
+  suspension_issue=$1
+  timeout_hook=report_architect_suspension
+  until_true "$phase_seconds" "$2" tree_suspended "$1"
+  timeout_hook=
+}
+report_architect_suspension() {
+  note "the architect of $suspension_issue in legion claims list: $("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" |
+    jq -c --arg issue "$suspension_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
+      | {state, suspensionHeld: (.suspensionHeld // false), suspendedBy: (.suspendedBy // null), pending: (.pending.id // null)}]')"
+}
 # The design gate in the daemon's state: closed while the spec's current version is past the one a
 # human approved, open while the approved version is the current one; design_gate_version ISSUE
 # prints the spec version the gate currently names.
@@ -615,7 +636,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project}')" >/dev/null
+dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
@@ -740,9 +761,9 @@ primary_issue() {
       # Round 1 left the bot's thread answered and resolved by the implementer: the reviewer, the
       # independent party, adjudicates the finding now, with its reply, and names the thread to the
       # implementer as accepted (already resolved, the implementer having closed it first).
-      review_note=" A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
+      review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
-    request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope.$review_note"
+    request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The round ends when the reviewer completes it: its review, its handoff commit, its completion.
     wait_for_phase "$root_issue" implementing 1200
     assert_handoff_committer "$root_issue" reviewer reviewing "$round"
@@ -920,7 +941,7 @@ primary_issue() {
   fi
   wait_for_phase "$root_issue" "done"
   until_true 60 "the daemon's done status on the Dispatch board" dispatch_status_is "$root_issue" "done"
-  until_true 120 "the lingering tree's architect to be suspended" tree_suspended "$root_issue"
+  await_tree_suspended "$root_issue" "the lingering tree's architect to be suspended"
   note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit; the daemon resumed production_check, the implementer's completion reached the architect, and its sign-off closed the issue; the tree lingers with its architect suspended"
   pass
 
@@ -988,7 +1009,7 @@ else
   begin "development-run-from-$from"
   # The proof human closes the first root, which frees its admission slot as its sign-off would.
   set_status "$root_issue" "done"
-  until_true 120 "the closed tree's architect to be suspended" tree_suspended "$root_issue"
+  await_tree_suspended "$root_issue" "the closed tree's architect to be suspended"
   pr_number=${STAGE3_PR:-$(gh -R "$repo" pr list --state all --limit 1 --json number --jq '.[0].number')}
   [ -n "$pr_number" ] || fail "no smoke pull request for the credential check; set STAGE3_PR"
   note "STAGE3_FROM=$from is a development run, never the proof: $root_issue closed by the proof human, credential check against $repo#$pr_number"
@@ -1022,7 +1043,7 @@ no_change_close() {
     fail "a status write on $nochange_issue was not the daemon's; see $evidence/nochange-events.json"
   session_contains "$nochange_issue" architect '"close_root"' || fail "the architect of $nochange_issue did not call close_root"
   token=$(claim_token "$nochange_issue" architect)
-  until_true 60 "the no-change tree's architect to be suspended" tree_suspended "$nochange_issue"
+  await_tree_suspended "$nochange_issue" "the no-change tree's architect to be suspended"
   # daemon.log carries the daemon's stderr too, so each line is parsed on its own, as every other
   # reader of it does: one line that is not JSON must not end the run.
   jq -R -c --arg issue "$nochange_issue" --arg token "$token" 'fromjson? | select(
@@ -1078,32 +1099,49 @@ restart_scenarios() {
   pass
 
   begin in-agent-credentials
-  # One bash command on purpose. The pane's gh is a plain gh (the daemon's PATH's, mise's here: the
-  # daemon was started with its directory first, ahead of this box's gh wrapper), reading the role's
-  # App token from the gh files under GH_CONFIG_DIR, the claim's directory the daemon writes; no
-  # grant and no `legion gh` are in the path of a GitHub call, and GH_TOKEN is set empty so nothing
-  # outranks the file. Each output carries a marker the instruction itself cannot produce (the
-  # instruction holds the unexpanded command), so only the pane's own bash tool output satisfies a
-  # check.
-  send_agent "$restart_issue" implementer "Stage 3 credential proof: run exactly this in your bash tool and include its exact output: echo \"CRED-GH=\$(command -v gh)\"; echo \"CRED-DIR=\$GH_CONFIG_DIR\"; echo \"CRED-TOKEN=\${GH_TOKEN-unset}.\"; echo \"CRED-VIEWER=\$(gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login)\"; echo \"CRED-PR=\$(gh pr view $pr_number --repo $repo --json url --jq .url)\". Wait after reporting."
-  until_true 240 "the real Go pane bash tool to resolve the daemon's gh" session_contains "$restart_issue" implementer "CRED-GH=$real_gh"
+  # One bash command on purpose. The pane's gh is the launcher directory's wrapper (`legion gh`),
+  # which runs the real gh the pane is told (LEGION_GH_PATH, mise's here: the daemon was started
+  # with its directory first, ahead of this box's gh wrapper) with GH_CONFIG_DIR at the directory of
+  # the owner the command names in the claim's gh bundle (LEGION_GH_OWNERS_DIR), which the daemon
+  # writes: the repository's owner's, with the role's App token; no grant is in the path of a
+  # GitHub call, and GH_TOKEN is set empty so nothing outranks the file. Each output carries a
+  # marker the instruction itself cannot produce (the instruction holds the unexpanded command), so
+  # only the pane's own bash tool output satisfies a check.
+  send_agent "$restart_issue" implementer "Stage 3 credential proof: run exactly this in your bash tool and include its exact output: echo \"CRED-GH=\$(command -v gh)\"; echo \"CRED-REAL=\$LEGION_GH_PATH\"; echo \"CRED-DIR=\$GH_CONFIG_DIR\"; echo \"CRED-OWNERS=\$(ls \"\$LEGION_GH_OWNERS_DIR\" | tr '\\n' ' ')\"; echo \"CRED-TOKEN=\${GH_TOKEN-unset}.\"; echo \"CRED-VIEWER=\$(gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login)\"; echo \"CRED-PR=\$(gh pr view $pr_number --repo $repo --json url --jq .url)\". Wait after reporting."
+  owner=$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")
+  until_true 240 "the real Go pane bash tool to resolve the launcher directory's gh wrapper" session_contains "$restart_issue" implementer "CRED-GH=$state/bin/gh"
+  until_true 240 "the implementer pane to name the real gh its wrapper runs" session_contains "$restart_issue" implementer "CRED-REAL=$real_gh"
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
+  until_true 240 "the implementer pane to list the bundle's one owner" session_contains "$restart_issue" implementer "CRED-OWNERS=$owner "
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
   implement_app=$(role_app implementer)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
-  # The directory the agent printed is the one its OMP process was launched with, named for its
-  # claim, and holds the two gh files the daemon writes for the pane alone.
+  # The directory the agent printed is the one its OMP process was launched with: its repository's
+  # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
+  # writes for the pane alone, and nothing else beside it.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
+  cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
   cred_dir=$(pane_value "$cred_omp" GH_CONFIG_DIR)
-  [[ $cred_dir == "$state/secrets/"*-implementer-gh ]] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want the claim's directory under $state/secrets"
+  [[ $cred_root == "$state/secrets/"*-implementer-gh ]] || fail "the implementer's OMP carries LEGION_GH_OWNERS_DIR=$cred_root, want the claim's bundle under $state/secrets"
+  [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
+  [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$real_gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $real_gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
-  [ "$(stat -c %a "$cred_dir")" = 700 ] || fail "$cred_dir is mode $(stat -c %a "$cred_dir"), want 700"
+  for dir in "$cred_root" "$cred_dir"; do
+    [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
+  done
+  [ "$(ls -A "$cred_root" | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(ls -A "$cred_root" | tr '\n' ' '), want $owner's directory alone"
   [ "$(ls -A "$cred_dir" | sort | tr '\n' ' ')" = "config.yml hosts.yml " ] || fail "$cred_dir holds $(ls -A "$cred_dir" | tr '\n' ' '), want config.yml and hosts.yml alone"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"
+  # git pushes through the shared clone's helper, `legion git-credential`, which the path of the
+  # repository git asks about routes to its owner's directory (credential.useHttpPath).
+  clone="$state/repos/github.com/$repo"
+  [ "$(git --git-dir="$clone/.git" config --get-all credential.helper | tail -1)" = '!legion git-credential' ] ||
+    fail "the shared clone's credential.helper is $(git --git-dir="$clone/.git" config --get-all credential.helper | tr '\n' ' '), want !legion git-credential last"
+  [ "$(git --git-dir="$clone/.git" config credential.useHttpPath)" = true ] || fail "the shared clone does not set credential.useHttpPath"
   # Negative control: a directory with no gh files is no credential — the same gh with it set is
   # refused by gh itself, naming GH_TOKEN, so the pane's identity comes from the daemon's files and
   # nothing else on this box.
@@ -1111,7 +1149,7 @@ restart_scenarios() {
     fail "gh with an empty GH_CONFIG_DIR and no token still answered"
   fi
   grep -q GH_TOKEN "$evidence/cred-negative.txt" || fail "gh with an empty GH_CONFIG_DIR failed without naming GH_TOKEN: $(cat "$evidence/cred-negative.txt")"
-  note "real implementer pane ran $real_gh with GH_CONFIG_DIR=$cred_dir (0700; config.yml and hosts.yml 0600) and an empty GH_TOKEN, authenticated as $implement_app, and viewed pull request #$pr_number"
+  note "real implementer pane ran $state/bin/gh, the wrapper, over $real_gh with GH_CONFIG_DIR=$cred_dir ($owner's directory of $cred_root; 0700, config.yml and hosts.yml 0600) and an empty GH_TOKEN, authenticated as $implement_app, and viewed pull request #$pr_number; the shared clone's helper is !legion git-credential with credential.useHttpPath"
   pass
 
   begin pending-dispatch-status-write

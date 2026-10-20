@@ -31,7 +31,10 @@
 # collide on it by default) the port the harness binds for the worker stream;
 # LEGION_E2E_SESSION_DB_PORT (required) a port on the devbox's private address that the devbox's
 # security group admits from the Legion nodes, as it admits the worker-stream port, where the
-# run's scratch Postgres listens for postgres-resume;
+# run's scratch Postgres listens for postgres-resume; LEGION_E2E_REPO_SECOND_OWNER (required)
+# `<owner>/<name>`, a repository under an owner other than sjawhar on which both Legion Apps are
+# installed, where second-owner provisions an issue and proves its pod's gh and git read
+# sjawhar/legion-smoke with read-only tokens (nothing is pushed to it);
 # STAGE4A_FROM a development entry point, which is never the proof; STAGE4A_EVIDENCE_DIR where the
 # transcript and the runtime's log go (default a fresh /tmp directory, kept and printed).
 #
@@ -58,6 +61,7 @@ namespace=legion
 # repository's infrastructure, not this one.
 port=${LEGION_E2E_WORKER_STREAM_PORT:-13373}
 repo=sjawhar/legion-smoke
+second_owner_repo=${LEGION_E2E_REPO_SECOND_OWNER:-}
 app_id=3202636
 app_key=LEGION_IMPLEMENT_APP_PRIVATE_KEY_B64
 # The scratch session database's image: the pinned Postgres the repository's CI tests against.
@@ -150,6 +154,11 @@ case "$session_db_port" in
 *[!0-9]*) fail "LEGION_E2E_SESSION_DB_PORT must be a port number, not '$session_db_port'" ;;
 esac
 [ "$session_db_port" != "$port" ] || fail "LEGION_E2E_SESSION_DB_PORT is the worker stream's port $port"
+[ -n "$second_owner_repo" ] ||
+  fail "LEGION_E2E_REPO_SECOND_OWNER is unset: the second-owner check provisions an issue on a repository of another owner (owner/name, never a literal here)"
+[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
+[ "$(tr '[:upper:]' '[:lower:]' <<<"${second_owner_repo%%/*}")" != "$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")" ] ||
+  fail "LEGION_E2E_REPO_SECOND_OWNER $second_owner_repo is under ${repo%%/*}, $repo's owner: the check needs a repository of another owner"
 for taken in "$port" "$session_db_port"; do
   if [ -n "$(ss -Hltn "sport = :$taken")" ]; then
     fail "port $taken is taken on the devbox: $(ss -Hltnp "sport = :$taken")"
@@ -290,6 +299,8 @@ go -C "$root/packages/envoy" build -o "$work/agent-secrets" ./cmd/agent-secrets
 note "built the e2e harness and agent-secrets from the checkout"
 
 harness_ok=
+# -test.timeout 150m must stay under the harness's staleRunBranchAge (4 hours): another run's
+# cache-lost-volume deletes a cache-b branch older than that as a killed run's leftover.
 if env \
   LEGION_E2E_RUNTIME_KUBECONFIG="$runtime_kubeconfig" \
   LEGION_E2E_RUNTIME_CONTEXT="$runtime_context" \
@@ -298,6 +309,7 @@ if env \
   LEGION_E2E_PROJECT="$project" \
   LEGION_E2E_IMAGE="$image" \
   LEGION_E2E_REPO="$repo" \
+  LEGION_E2E_REPO_SECOND_OWNER="$second_owner_repo" \
   LEGION_E2E_STREAM_HOST="$host" \
   LEGION_E2E_STREAM_PORT="$port" \
   LEGION_E2E_IMPLEMENT_APP_ID="$app_id" \
