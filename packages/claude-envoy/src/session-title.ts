@@ -45,13 +45,17 @@ const SHORT_ID_LENGTH = 8
 /** How many parents `isAncestor` follows before it stops. */
 const MAX_ANCESTORS = 64
 
+/** A terminal control sequence (a colour code: ESC [ parameters final byte). Built from the ESC
+ *  code, since a control character in a regular expression literal is a lint error. */
+const CSI_SEQUENCE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "gu")
+
 // Bidirectional overrides and isolates would reorder the short id after the name on the Agents
 // page. Other format characters stay: a zero-width joiner holds an emoji sequence together.
 function oneLine(value: string): string {
   return (
     value
-      // A terminal escape sequence (a colour code) goes whole, not just its ESC.
-      .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+      // A colour code goes whole; any other escape loses only its ESC, below.
+      .replace(CSI_SEQUENCE, "")
       .replace(/[\u202a-\u202e\u2066-\u2069]/gu, "")
       .replace(/[\s\p{Cc}]+/gu, " ")
       .trim()

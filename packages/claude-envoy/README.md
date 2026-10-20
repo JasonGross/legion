@@ -299,7 +299,8 @@ bounded at one second (on a host without `/proc`, reading the pane's process cha
 `ps` call per step, each bounded the same way), so a later tmux rename shows from the next start. It also writes the title
 to the session's Dispatch state directory, where the `dispatch` command reads it to stamp the
 session's Dispatch writes, so a comment or message from the session carries the same name. With
-inbound messages or Envoy off it writes it once, for the id the session starts with.
+inbound messages or Envoy off it writes it once, for the id the session starts with. It writes
+nothing when the session starts with Dispatch off, or under the QA override `ENVOY_SESSION_ID`.
 
 `claude -p` can run a channel session, but it disables features that need terminal input, including
 multiple-choice questions and plan approval. Production Legion workers must have MCP and channel

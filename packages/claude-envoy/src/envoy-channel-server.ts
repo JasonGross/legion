@@ -1014,19 +1014,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
     writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), value)
   }
 
-  /** Stamp the title for the session id `resolveId` names, once, where nothing will register it.
-   *  Nothing is written while Dispatch is off, since only the `dispatch` command reads it. */
+  // Only the `dispatch` command reads the stamp, so nothing is written while the session starts with
+  // Dispatch off, or under the QA override ENVOY_SESSION_ID, whose id that command never reads.
+  const stamping = dispatch.enabled && configuredValue(overrideSessionId) === undefined
+  /** Stamp the title for the session id `resolveId` names, once, where nothing will register it. */
   const stampOnce = (resolveId: () => string): void => {
-    // The QA override names an id the `dispatch` command never reads (it reads
-    // CLAUDE_CODE_SESSION_ID), so under it there is nothing to stamp.
-    if (!dispatch.enabled || configuredValue(overrideSessionId) !== undefined) return
+    if (!stamping) return
     try {
       const sessionId = resolveId()
       const own = title(sessionId)
       if (own !== "") stampTitle(sessionId, own)
     } catch (error) {
       process.stderr.write(
-        `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}; the dispatch command names this session by its id\n`,
+        `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}; the dispatch command's writes carry no session title\n`,
       )
     }
   }
@@ -1139,7 +1139,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         configFile,
         stateDirectory,
         title,
-        ...(configuredValue(overrideSessionId) === undefined ? { stampTitle } : {}),
+        ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })

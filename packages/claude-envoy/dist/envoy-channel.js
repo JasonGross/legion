@@ -47401,8 +47401,9 @@ var TMUX_PANE_FORMAT = [
 var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
 var MAX_ANCESTORS = 64;
+var CSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "gu");
 function oneLine(value) {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "").replace(/[\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\s\p{Cc}]+/gu, " ").trim();
+  return value.replace(CSI_SEQUENCE, "").replace(/[\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\s\p{Cc}]+/gu, " ").trim();
 }
 function visible(value) {
   return value.replace(/[\s\p{Cc}\p{Cf}\p{Cs}\p{Cn}\p{M}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== "";
@@ -48040,8 +48041,9 @@ async function runEnvoyChannelServer() {
   const stampTitle = (sessionId, value) => {
     writeSessionTitle(sessionDirectory(process.env, sessionId), value);
   };
+  const stamping = dispatch.enabled && configuredValue(overrideSessionId) === undefined;
   const stampOnce = (resolveId) => {
-    if (!dispatch.enabled || configuredValue(overrideSessionId) !== undefined)
+    if (!stamping)
       return;
     try {
       const sessionId = resolveId();
@@ -48049,7 +48051,7 @@ async function runEnvoyChannelServer() {
       if (own !== "")
         stampTitle(sessionId, own);
     } catch (error48) {
-      process.stderr.write(`envoy-channel: could not write the session title for the dispatch command \u2014 ${messageFor(error48)}; the dispatch command names this session by its id
+      process.stderr.write(`envoy-channel: could not write the session title for the dispatch command \u2014 ${messageFor(error48)}; the dispatch command's writes carry no session title
 `);
     }
   };
@@ -48150,7 +48152,7 @@ async function runEnvoyChannelServer() {
         configFile,
         stateDirectory,
         title,
-        ...configuredValue(overrideSessionId) === undefined ? { stampTitle } : {},
+        ...stamping ? { stampTitle } : {},
         ...configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}
       });
     }

@@ -213,7 +213,7 @@ test("isAncestor finds this process and its parent, and not a process outside it
   expect(isAncestor(child.stdout.toString())).toBe(false)
 })
 
-test("a terminal escape sequence leaves nothing of itself in a title", () => {
+test("a colour code (a CSI sequence) leaves nothing of itself in a title", () => {
   expect(
     sessionTitle(
       { ENVOY_SESSION_TITLE: "\t\u001b[31mred\u001b[0m" },
