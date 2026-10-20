@@ -995,12 +995,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
   const configFile = sessionConfigFile("claude", process.env)
-  const { envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory })
+  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory })
   // Claude Code logs the server's stderr: why a section is off, once.
   if (notice !== null) process.stderr.write(`envoy-channel: ${notice}\n`)
   // The title every registration sends, and the one the `dispatch` command stamps on this
-  // session's Dispatch writes. Both paths below stamp it, since a session whose inbound messages
-  // are off still runs that command.
+  // session's Dispatch writes. Registration stamps it; with Envoy or its inbound messages off,
+  // nothing registers, so those paths stamp it once themselves.
   const title = sessionTitle(
     {
       ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
@@ -1013,9 +1013,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
     writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), value)
   }
 
-  /** Stamp the title for `sessionId` once, where nothing will register it. */
-  const stampOnce = (sessionId: string): void => {
+  /** Stamp the title for the session id `resolveId` names, once, where nothing will register it.
+   *  Nothing is written while Dispatch is off, since only the `dispatch` command reads it. */
+  const stampOnce = (resolveId: () => string): void => {
+    if (!dispatch.enabled) return
     try {
+      const sessionId = resolveId()
       const own = title(sessionId)
       if (own !== "") stampTitle(sessionId, own)
     } catch (error) {
@@ -1027,7 +1030,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   if (!envoy.enabled) {
     // The `dispatch` command still runs with Envoy off, so it still gets the session's title.
-    stampOnce(
+    stampOnce(() =>
       claudeSessionId({
         ENVOY_SESSION_ID: overrideSessionId,
         CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"],
@@ -1113,7 +1116,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         )
       }
       // No registration happens here, so the title is stamped directly.
-      stampOnce(identity.id)
+      stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       connection = await connect({

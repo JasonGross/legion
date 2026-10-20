@@ -48027,7 +48027,7 @@ async function runEnvoyChannelServer() {
   const directory = projectDirectory();
   const pane = legionPane(process.env);
   const configFile = sessionConfigFile("claude", process.env);
-  const { envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory });
+  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory });
   if (notice !== null)
     process.stderr.write(`envoy-channel: ${notice}
 `);
@@ -48039,8 +48039,11 @@ async function runEnvoyChannelServer() {
   const stampTitle = (sessionId, value) => {
     writeSessionTitle(sessionDirectory(process.env, sessionId), value);
   };
-  const stampOnce = (sessionId) => {
+  const stampOnce = (resolveId) => {
+    if (!dispatch.enabled)
+      return;
     try {
+      const sessionId = resolveId();
       const own = title(sessionId);
       if (own !== "")
         stampTitle(sessionId, own);
@@ -48051,7 +48054,7 @@ async function runEnvoyChannelServer() {
   };
   const overrideSessionId = process.env["ENVOY_SESSION_ID"];
   if (!envoy.enabled) {
-    stampOnce(claudeSessionId({
+    stampOnce(() => claudeSessionId({
       ENVOY_SESSION_ID: overrideSessionId,
       CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"]
     }));
@@ -48126,7 +48129,7 @@ async function runEnvoyChannelServer() {
       if (pane !== undefined) {
         stopPane(`a Legion pane's task reaches it over NATS, and inbound messages are off: ${inbound.off}`);
       }
-      stampOnce(identity.id);
+      stampOnce(() => identity.id);
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off });
     } else {
       connection = await import_nats2.connect({
