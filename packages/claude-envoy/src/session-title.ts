@@ -55,11 +55,14 @@ function oneLine(value: string): string {
 }
 
 /** Whether `value` holds a character that shows: not whitespace, a control, format, surrogate or
- *  unassigned code point, an ignorable code point, or the blank braille pattern. A private-use
- *  glyph (a patched font's icon) counts. */
+ *  unassigned code point, a combining mark with nothing to sit on, an ignorable code point, or
+ *  the blank braille pattern. A private-use glyph (a patched font's icon) counts. */
 function visible(value: string): boolean {
   return (
-    value.replace(/[\s\p{Cc}\p{Cf}\p{Cs}\p{Cn}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== ""
+    value.replace(
+      /[\s\p{Cc}\p{Cf}\p{Cs}\p{Cn}\p{M}\p{Default_Ignorable_Code_Point}\u2800]/gu,
+      "",
+    ) !== ""
   )
 }
 
@@ -181,6 +184,7 @@ export function sessionTitle(
     (socket === "" || serverPid === "" || pane === undefined
       ? undefined
       : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ??
-    (basename(directory) || directory)
+    // A directory name holds whatever the filesystem allows, newlines and overrides among them.
+    oneLine(basename(directory) || directory)
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`
 }

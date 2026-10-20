@@ -173,6 +173,17 @@ test("outside tmux, or when tmux cannot answer, the title is the project directo
   ).toBe("legion 3084299d")
 })
 
+test("a project directory's own name is cleaned like any other title", () => {
+  expect(sessionTitle({}, "/work/a\u202eb", noTmux)(SESSION_ID)).toBe("ab 3084299d")
+  expect(sessionTitle({}, "/work/two\nlines", noTmux)(SESSION_ID)).toBe("two lines 3084299d")
+})
+
+test("a title of combining marks alone falls through", () => {
+  expect(sessionTitle({ ENVOY_SESSION_TITLE: "\u0301" }, "/work/legion", noTmux)(SESSION_ID)).toBe(
+    "legion 3084299d",
+  )
+})
+
 test("the short id follows the id it is given, so a /clear handoff's new id shows", () => {
   const title = sessionTitle({}, "/work/legion/", noTmux)
   expect(title("aaaaaaaa-1111")).toBe("legion aaaaaaaa")
