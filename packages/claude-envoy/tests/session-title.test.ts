@@ -213,6 +213,17 @@ test("isAncestor finds this process and its parent, and not a process outside it
   expect(isAncestor(child.stdout.toString())).toBe(false)
 })
 
+test("a title that shows nothing once cleaned falls through, from every source", () => {
+  for (const blank of ["\u001b[0m", "\u001b[31m\u001b[0m", "\u001b[1m\u200b"]) {
+    expect(sessionTitle({ ENVOY_SESSION_TITLE: blank }, "/work/legion", noTmux)(SESSION_ID)).toBe(
+      "legion 3084299d",
+    )
+  }
+  expect(paneTitle(tmuxAnswering("\u200b", "claude", "1"))).toBeUndefined()
+  expect(paneTitle(tmuxAnswering("work", "\u200b", "0"))).toBe("work")
+  expect(sessionTitle({}, "/work/\u001b[0m", noTmux)(SESSION_ID)).toBe("session 3084299d")
+})
+
 test("a colour code (a CSI sequence) leaves nothing of itself in a title", () => {
   expect(
     sessionTitle(

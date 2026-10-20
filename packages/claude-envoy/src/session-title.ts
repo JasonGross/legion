@@ -154,9 +154,10 @@ export function tmuxPaneTitle(
     fields.map(oneLine)
   if (pid !== serverPid || !ownPane(panePid)) return undefined
   const session = group === "" ? name : group
-  // A tmux too old to expand a format prints it as it was sent.
-  if (session === "" || session.startsWith("#{")) return undefined
-  if (window !== "" && (automaticRename === "0" || automaticRename === "off")) {
+  // A tmux too old to expand a format prints it as it was sent; a name with nothing that shows
+  // would be a blank label.
+  if (!visible(session) || session.startsWith("#{")) return undefined
+  if (visible(window) && (automaticRename === "0" || automaticRename === "off")) {
     return `${session}:${window}`
   }
   return /^[0-9]+$/.test(session) ? undefined : session
@@ -177,22 +178,21 @@ export function sessionTitle(
   query: TmuxQuery = queryTmux,
   ownPane: (panePid: string) => boolean = (panePid) => isAncestor(panePid),
 ): SessionTitle {
-  const explicit = configuredValue(environment.ENVOY_SESSION_TITLE)
-  // A title with nothing that shows (a zero-width space, a control character) would be a blank row.
-  if (explicit !== undefined && visible(explicit)) {
-    const title = oneLine(explicit)
-    return () => title
-  }
+  const explicit = oneLine(configuredValue(environment.ENVOY_SESSION_TITLE) ?? "")
+  // A title with nothing that shows once cleaned (a zero-width space, a colour code alone) would
+  // be a blank row.
+  if (visible(explicit)) return () => explicit
   // `TMUX` is `<socket>,<server pid>,<session>`, and a socket path may hold a comma.
   const parts = configuredValue(environment.TMUX)?.split(",") ?? []
   const socket = parts.slice(0, -2).join(",")
   const serverPid = parts.at(-2) ?? ""
   const pane = configuredValue(environment.TMUX_PANE)?.trim()
+  // A directory name holds whatever the filesystem allows, newlines and overrides among them.
+  const directoryName = oneLine(basename(directory) || directory)
   const name =
     (socket === "" || serverPid === "" || pane === undefined
       ? undefined
       : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ??
-    // A directory name holds whatever the filesystem allows, newlines and overrides among them.
-    oneLine(basename(directory) || directory)
+    (visible(directoryName) ? directoryName : "session")
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`
 }

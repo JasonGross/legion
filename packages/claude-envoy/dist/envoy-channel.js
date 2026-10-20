@@ -47455,24 +47455,23 @@ function tmuxPaneTitle(socket, serverPid, pane, ownPane, query = queryTmux) {
   if (pid !== serverPid || !ownPane(panePid))
     return;
   const session = group === "" ? name : group;
-  if (session === "" || session.startsWith("#{"))
+  if (!visible(session) || session.startsWith("#{"))
     return;
-  if (window2 !== "" && (automaticRename === "0" || automaticRename === "off")) {
+  if (visible(window2) && (automaticRename === "0" || automaticRename === "off")) {
     return `${session}:${window2}`;
   }
   return /^[0-9]+$/.test(session) ? undefined : session;
 }
 function sessionTitle(environment, directory, query = queryTmux, ownPane = (panePid) => isAncestor(panePid)) {
-  const explicit = configuredValue(environment.ENVOY_SESSION_TITLE);
-  if (explicit !== undefined && visible(explicit)) {
-    const title = oneLine(explicit);
-    return () => title;
-  }
+  const explicit = oneLine(configuredValue(environment.ENVOY_SESSION_TITLE) ?? "");
+  if (visible(explicit))
+    return () => explicit;
   const parts = configuredValue(environment.TMUX)?.split(",") ?? [];
   const socket = parts.slice(0, -2).join(",");
   const serverPid = parts.at(-2) ?? "";
   const pane = configuredValue(environment.TMUX_PANE)?.trim();
-  const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ?? oneLine(basename2(directory) || directory);
+  const directoryName = oneLine(basename2(directory) || directory);
+  const name = (socket === "" || serverPid === "" || pane === undefined ? undefined : tmuxPaneTitle(socket, serverPid, pane, ownPane, query)) ?? (visible(directoryName) ? directoryName : "session");
   return (sessionId) => `${name} ${sessionId.slice(0, SHORT_ID_LENGTH)}`;
 }
 
