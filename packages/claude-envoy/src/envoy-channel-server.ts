@@ -998,6 +998,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, { cwd: directory })
   // Claude Code logs the server's stderr: why a section is off, once.
   if (notice !== null) process.stderr.write(`envoy-channel: ${notice}\n`)
+  const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   // The title every registration sends, and the one the `dispatch` command stamps on this
   // session's Dispatch writes. Registration stamps it; with Envoy or its inbound messages off,
   // nothing registers, so those paths stamp it once themselves.
@@ -1016,7 +1017,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
   /** Stamp the title for the session id `resolveId` names, once, where nothing will register it.
    *  Nothing is written while Dispatch is off, since only the `dispatch` command reads it. */
   const stampOnce = (resolveId: () => string): void => {
-    if (!dispatch.enabled) return
+    // The QA override names an id the `dispatch` command never reads (it reads
+    // CLAUDE_CODE_SESSION_ID), so under it there is nothing to stamp.
+    if (!dispatch.enabled || configuredValue(overrideSessionId) !== undefined) return
     try {
       const sessionId = resolveId()
       const own = title(sessionId)
@@ -1027,7 +1030,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
       )
     }
   }
-  const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   if (!envoy.enabled) {
     // The `dispatch` command still runs with Envoy off, so it still gets the session's title.
     stampOnce(() =>
@@ -1137,7 +1139,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         configFile,
         stateDirectory,
         title,
-        stampTitle,
+        ...(configuredValue(overrideSessionId) === undefined ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })

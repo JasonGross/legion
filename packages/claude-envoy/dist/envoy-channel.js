@@ -47402,7 +47402,7 @@ var TMUX_TIMEOUT_MS = 1000;
 var SHORT_ID_LENGTH = 8;
 var MAX_ANCESTORS = 64;
 function oneLine(value) {
-  return value.replace(/[\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\s\p{Cc}]+/gu, " ").trim();
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "").replace(/[\u202a-\u202e\u2066-\u2069]/gu, "").replace(/[\s\p{Cc}]+/gu, " ").trim();
 }
 function visible(value) {
   return value.replace(/[\s\p{Cc}\p{Cf}\p{Cs}\p{Cn}\p{M}\p{Default_Ignorable_Code_Point}\u2800]/gu, "") !== "";
@@ -48031,6 +48031,7 @@ async function runEnvoyChannelServer() {
   if (notice !== null)
     process.stderr.write(`envoy-channel: ${notice}
 `);
+  const overrideSessionId = process.env["ENVOY_SESSION_ID"];
   const title = sessionTitle({
     ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
     TMUX: process.env["TMUX"],
@@ -48040,7 +48041,7 @@ async function runEnvoyChannelServer() {
     writeSessionTitle(sessionDirectory(process.env, sessionId), value);
   };
   const stampOnce = (resolveId) => {
-    if (!dispatch.enabled)
+    if (!dispatch.enabled || configuredValue(overrideSessionId) !== undefined)
       return;
     try {
       const sessionId = resolveId();
@@ -48052,7 +48053,6 @@ async function runEnvoyChannelServer() {
 `);
     }
   };
-  const overrideSessionId = process.env["ENVOY_SESSION_ID"];
   if (!envoy.enabled) {
     stampOnce(() => claudeSessionId({
       ENVOY_SESSION_ID: overrideSessionId,
@@ -48150,7 +48150,7 @@ async function runEnvoyChannelServer() {
         configFile,
         stateDirectory,
         title,
-        stampTitle,
+        ...configuredValue(overrideSessionId) === undefined ? { stampTitle } : {},
         ...configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}
       });
     }

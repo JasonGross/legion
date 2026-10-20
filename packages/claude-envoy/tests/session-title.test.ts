@@ -213,6 +213,16 @@ test("isAncestor finds this process and its parent, and not a process outside it
   expect(isAncestor(child.stdout.toString())).toBe(false)
 })
 
+test("a terminal escape sequence leaves nothing of itself in a title", () => {
+  expect(
+    sessionTitle(
+      { ENVOY_SESSION_TITLE: "\t\u001b[31mred\u001b[0m" },
+      "/work/legion",
+      noTmux,
+    )(SESSION_ID),
+  ).toBe("red")
+})
+
 test("a title keeps no bidirectional override, and keeps a private-use glyph", () => {
   expect(
     sessionTitle({ ENVOY_SESSION_TITLE: "\u202eevil.txt" }, "/work/legion", noTmux)(SESSION_ID),

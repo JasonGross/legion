@@ -48,10 +48,14 @@ const MAX_ANCESTORS = 64
 // Bidirectional overrides and isolates would reorder the short id after the name on the Agents
 // page. Other format characters stay: a zero-width joiner holds an emoji sequence together.
 function oneLine(value: string): string {
-  return value
-    .replace(/[\u202a-\u202e\u2066-\u2069]/gu, "")
-    .replace(/[\s\p{Cc}]+/gu, " ")
-    .trim()
+  return (
+    value
+      // A terminal escape sequence (a colour code) goes whole, not just its ESC.
+      .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+      .replace(/[\u202a-\u202e\u2066-\u2069]/gu, "")
+      .replace(/[\s\p{Cc}]+/gu, " ")
+      .trim()
+  )
 }
 
 /** Whether `value` holds a character that shows: not whitespace, a control, format, surrogate or
