@@ -46972,7 +46972,7 @@ function claudeChannelGate(input) {
     };
   }
   const asked = `plugin:${entry.name}@${entry.marketplace}`;
-  if (plugin?.marketplace !== undefined && entry.marketplace !== plugin.marketplace) {
+  if (plugin?.marketplace !== undefined && cacheDirectoryName(entry.marketplace ?? "") !== cacheDirectoryName(plugin.marketplace)) {
     return {
       loaded: false,
       why: `claude asked for ${asked} but this plugin is installed from ${plugin.marketplace}`
@@ -46990,6 +46990,9 @@ function claudeChannelGate(input) {
     loaded: false,
     why: `${asked} is not on your organization's approved channels list (allowedChannelPlugins in managed settings)`
   };
+}
+function cacheDirectoryName(marketplace) {
+  return marketplace.replace(/[^a-zA-Z0-9\-_]/g, "-");
 }
 function processExecutable(pid) {
   if (process.platform === "linux") {

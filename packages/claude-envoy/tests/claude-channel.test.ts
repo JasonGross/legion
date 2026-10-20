@@ -99,6 +99,21 @@ test("an entry from another marketplace than the installed plugin is skipped", (
   })
 })
 
+test("a marketplace whose name holds a dot matches its cache directory's sanitized name", () => {
+  // Claude Code writes the cache path with every character outside [A-Za-z0-9_-] made "-", and
+  // compares the flag's marketplace as written.
+  expect(
+    claudeChannelGate({
+      commandLine: exact(
+        "--dangerously-load-development-channels",
+        "plugin:claude-envoy@acme.tools",
+      ),
+      plugin: { name: "claude-envoy", marketplace: "acme-tools" },
+      allowlist: undefined,
+    }),
+  ).toEqual({ loaded: true })
+})
+
 // A plugin's server is `plugin:claude-envoy:envoy` to Claude Code, which no `server:` entry names;
 // a bare config's server is named by its config, which this process does not know.
 test("a plugin takes only plugin entries, and a bare config any development server entry", () => {

@@ -97,8 +97,10 @@ A broadcast sends one message to many agents.
    example `Broadcast to 3 of 4 selected`, and each selected agent is a chip you can remove.
 3. Type the message, pick the mode if you want another, and choose **Send to N**.
 
-Until you pick a mode, a broadcast goes as a BTW, or as an Aside when an agent you selected takes
-Aside but not BTW (a Claude Code session, for example). The box then says "Sending as Aside" and
+Until you pick a mode, a broadcast goes as a BTW, or as an Aside when every agent you selected that
+takes any mode takes Aside and one of them does not take BTW (a Claude Code session, for example).
+Select a Claude Code session together with an agent that takes only BTW, and the broadcast stays a
+BTW and leaves the Claude Code session out. The box then says "Sending as Aside" and
 names that agent. An agent that does not take the mode the broadcast goes in is left out, and its
 chip says why; once you pick a mode, Dispatch never switches it to another. One broadcast reaches
 at most 100 agents.

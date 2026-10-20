@@ -76,7 +76,10 @@ events and sends them to the current Claude Code session as supported
   The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
   off for the account (not signed in, or an account without the channels feature), for a
   third-party provider (Bedrock, Vertex or Foundry), and for an organization whose managed settings
-  do not set `channelsEnabled: true`. It then shows
+  do not set `channelsEnabled: true`; it ignores `--dangerously-load-development-channels` in a
+  non-interactive session (`-p`, which the check does see, or stdout that is not a terminal, which it
+  does not); and it skips a channel on a connection that negotiated an MCP protocol revision with
+  no unsolicited notifications. It then shows
   `--dangerously-load-development-channels ignored` (or `--channels ignored`) with the reason when
   the session starts, and drops every notification. The server sees the flag on the command line,
   counts the channel as loaded and still advertises Aside, so Dispatch records a message to that
