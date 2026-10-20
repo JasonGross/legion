@@ -1,14 +1,14 @@
 import { spawnSync } from "node:child_process"
 import { readdirSync, readFileSync, readlinkSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, join, sep } from "node:path"
+import { basename, join, resolve, sep } from "node:path"
 import { z } from "zod"
 
 /**
  * Whether Claude Code passes this server's channel notifications to the model. It says nothing
  * about that to the server: the MCP handshake is the same with the channel on or off, and a
  * notification sent while it is off is dropped without a word. So the server reads the `claude`
- * process's own command line and applies the gate Claude Code applies to it (as of 2.1.287): the
+ * process's own command line and applies the gate Claude Code applies to it (as of 2.1.301): the
  * entry must be named by `--channels` or, in an interactive session,
  * `--dangerously-load-development-channels`; a plugin entry must name the marketplace the plugin
  * is installed from; and a `--channels` entry must be allowlisted, which for this plugin means an
@@ -51,26 +51,198 @@ function parseEntry(value: string, dev: boolean): ChannelEntry | undefined {
   return undefined
 }
 
+// Claude Code 2.1.301's own argument scanner: the options that take one value, the ones whose value
+// is optional (taken when the next argument is not an option), and the ones that take every value
+// up to the next option. Its print-mode test and its channel flags skip those values, and `--`
+// ends the options.
+const VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--prefill",
+  "--prefill-b64",
+  "--deep-link-repo",
+  "--deep-link-last-fetch",
+  "--deep-link-cwd-b64",
+  "--handle-uri",
+  "--settings",
+  "--managed-settings",
+  "--setting-sources",
+  "--client-data-url",
+  "--watch-artifact",
+  "--watch-artifact-no-autoreact",
+  "--team-name",
+  "--agent-id",
+  "--agent-name",
+  "--agent-color",
+  "--parent-session-id",
+  "--agent-type",
+  "--model",
+  "--agent",
+  "--routine",
+  "--effort",
+  "--fast-mode",
+  "--permission-mode",
+  "--inherit-permission-mode",
+  "--proactivity",
+  "--debug-file",
+  "--system-prompt",
+  "--system-prompt-file",
+  "--append-system-prompt",
+  "--append-system-prompt-file",
+  "--system-prompt-snapshot",
+  "--append-subagent-system-prompt",
+  "--append-subagent-system-prompt-file",
+  "--plan-mode-instructions",
+  "--permission-prompt-tool",
+  "--permission-prompts",
+  "--json-schema",
+  "--fallback-model",
+  "--advisor",
+  "--agents",
+  "--name",
+  "-n",
+  "--allowedTools",
+  "--allowed-tools",
+  "--disallowedTools",
+  "--disallowed-tools",
+  "--tools",
+  "--add-dir",
+  "--mcp-config",
+  "--betas",
+  "--file",
+  "--channels",
+  "--dangerously-load-development-channels",
+  "--plugin-dir",
+  "--plugin-dir-no-mcp",
+  "--plugin-url",
+  "--remote-control-session-name-prefix",
+  "--exec",
+  "-m",
+  "--sdk-url",
+  "--thinking",
+  "--thinking-display",
+  "--max-thinking-tokens",
+  "--max-turns",
+  "--max-budget-usd",
+  "--task-budget",
+  "--autocompact",
+  "--rewind-files",
+  "--resume-session-at",
+  "--resume-drops-turn",
+  "--workload",
+  "--output-format",
+  "--input-format",
+  "--teammate-mode",
+  "--messaging-socket-path",
+  "--session-id",
+  "--environment",
+  "--pool",
+  "--ref",
+  "--on-branch",
+  "--correlation-id",
+  "--forward-home-settings",
+  "--project-config-root",
+  "--attach-serve",
+])
+const OPTIONAL_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-d",
+  "--debug",
+  "-r",
+  "--resume",
+  "--from-pr",
+  "-w",
+  "--worktree",
+  "--teleport",
+  "--cloud",
+  "--remote",
+  "--project",
+  "--remote-control",
+  "--rc",
+  "--prompt-suggestions",
+])
+const MULTI_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--allowedTools",
+  "--allowed-tools",
+  "--disallowedTools",
+  "--disallowed-tools",
+  "--tools",
+  "--add-dir",
+  "--mcp-config",
+  "--betas",
+  "--file",
+  "--channels",
+  "--dangerously-load-development-channels",
+])
+
+function isOption(argument: string): boolean {
+  return argument.length > 1 && argument.startsWith("-")
+}
+
+/** The index of the last argument `argv[index]` consumes as its values, as Claude Code skips them. */
+function lastValueIndex(argv: readonly string[], index: number): number {
+  const argument = argv[index] ?? ""
+  if (OPTIONAL_VALUE_OPTIONS.has(argument)) {
+    const next = argv[index + 1]
+    return next !== undefined && !isOption(next) ? index + 1 : index
+  }
+  if (!VALUE_OPTIONS.has(argument)) return index
+  let last = index + 1
+  if (MULTI_VALUE_OPTIONS.has(argument)) {
+    while (last + 1 < argv.length && !isOption(argv[last + 1] ?? "")) last++
+  }
+  return last
+}
+
 /**
- * The channel entries a `claude` command line names, parsed as Claude Code parses them: each flag
- * takes the values after it up to the next option, or one inline `=` value, and untagged values are
- * dropped. Development channels load only in an interactive session, so `-p` drops them, but only
- * when `exact`: a command line split on whitespace (`ps`) cannot tell a `-p` flag from one inside
- * a prompt, and dropping a loaded channel there would refuse messages the session takes.
+ * Whether a command line asks for a non-interactive session, as Claude Code reads it: `-p`,
+ * `--print`, `--init-only` or `--sdk-url` as an option, not as another option's value, before `--`.
  */
-export function claudeChannelEntries(argv: readonly string[], exact = true): ChannelEntry[] {
-  const interactive = !exact || (!argv.includes("-p") && !argv.includes("--print"))
-  const entries: ChannelEntry[] = []
-  for (let index = 0; index < argv.length; index++) {
+export function asksForPrintMode(argv: readonly string[]): boolean {
+  for (let index = 1; index < argv.length; index++) {
     const argument = argv[index] ?? ""
+    if (argument === "--") return false
+    if (
+      argument === "-p" ||
+      argument === "--print" ||
+      argument === "--init-only" ||
+      argument.startsWith("--sdk-url")
+    ) {
+      return true
+    }
+    index = lastValueIndex(argv, index)
+  }
+  return false
+}
+
+/**
+ * The channel entries a `claude` command line names, as Claude Code reads them: each flag, before
+ * `--`, takes the values after it up to the next option, or one inline `=` value, and untagged values
+ * are dropped; every `--channels` entry comes before every development one, since Claude Code
+ * matches the first entry naming the server. Development channels load only in an interactive
+ * session, so they are dropped when `interactive` is false. A command line split on whitespace
+ * (`ps`, not `exact`) cannot tell a `-p` option from a word of a prompt, so its print mode is never
+ * read: dropping a loaded channel there would refuse messages the session takes.
+ */
+export function claudeChannelEntries(
+  argv: readonly string[],
+  exact = true,
+  stdoutIsTerminal: boolean | undefined = undefined,
+): ChannelEntry[] {
+  const interactive = !exact || (!asksForPrintMode(argv) && stdoutIsTerminal !== false)
+  const approved: ChannelEntry[] = []
+  const development: ChannelEntry[] = []
+  for (let index = 1; index < argv.length; index++) {
+    const argument = argv[index] ?? ""
+    if (argument === "--") break
     const equals = argument.indexOf("=")
     const flag = equals === -1 ? argument : argument.slice(0, equals)
     const dev = CHANNEL_FLAGS[flag]
-    if (dev === undefined) continue
+    if (dev === undefined) {
+      index = lastValueIndex(argv, index)
+      continue
+    }
     const values: string[] = []
     if (equals !== -1) values.push(argument.slice(equals + 1))
     else {
-      while (index + 1 < argv.length && !(argv[index + 1] ?? "-").startsWith("-")) {
+      while (index + 1 < argv.length && !isOption(argv[index + 1] ?? "-")) {
         values.push(argv[index + 1] ?? "")
         index++
       }
@@ -78,10 +250,10 @@ export function claudeChannelEntries(argv: readonly string[], exact = true): Cha
     if (dev && !interactive) continue
     for (const value of values) {
       const entry = parseEntry(value, dev)
-      if (entry !== undefined) entries.push(entry)
+      if (entry !== undefined) (dev ? development : approved).push(entry)
     }
   }
-  return entries
+  return [...approved, ...development]
 }
 
 /** A process's command line: its arguments, and whether they are exact (`/proc`) rather than
@@ -89,6 +261,12 @@ export function claudeChannelEntries(argv: readonly string[], exact = true): Cha
 export interface CommandLine {
   readonly argv: readonly string[]
   readonly exact: boolean
+  /** Whether the process's stdout is a terminal, when that can be read (`/proc`): Claude Code is
+   *  non-interactive when it is not, and then ignores development channels. */
+  readonly stdoutIsTerminal?: boolean
+  /** The process's working directory, when it can be read (`/proc`), which a relative
+   *  `--plugin-dir` value is relative to. */
+  readonly cwd?: string
 }
 
 /**
@@ -112,7 +290,11 @@ export function claudeChannelGate(input: {
       ? "server:<name>"
       : `plugin:${plugin.name}@${plugin.marketplace ?? "<marketplace>"}`
   // A bare config's own server name is not known here, so any `server:` entry counts for it.
-  const entry = claudeChannelEntries(commandLine.argv, commandLine.exact).find((candidate) =>
+  const entry = claudeChannelEntries(
+    commandLine.argv,
+    commandLine.exact,
+    commandLine.stdoutIsTerminal,
+  ).find((candidate) =>
     plugin === undefined
       ? candidate.kind === "server"
       : candidate.kind === "plugin" && candidate.name === plugin.name,
@@ -183,12 +365,34 @@ export function processExecutable(pid: number): string | undefined {
   return first === undefined ? undefined : first.slice(1)
 }
 
+/** Whether process `pid`'s stdout is a terminal, from `/proc` on Linux; undefined elsewhere or
+ *  when it cannot be read. */
+function stdoutIsTerminal(pid: number): boolean | undefined {
+  if (process.platform !== "linux") return undefined
+  try {
+    const target = readlinkSync(`/proc/${pid}/fd/1`)
+    return target.startsWith("/dev/pts/") || /^\/dev\/tty[^S]/.test(target) || target === "/dev/tty"
+  } catch {
+    return undefined
+  }
+}
+
+/** Process `pid`'s working directory, from `/proc`; undefined when it cannot be read. */
+function workingDirectory(pid: number): string | undefined {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * The command line of process `pid`, or undefined when it cannot be read: `/proc` on Linux
- * (exact), `ps` elsewhere (split on whitespace, which no channel entry contains), and nothing on
- * Windows. Claude Code sets `process.title` to `claude`, which under Node overwrites the arguments
- * `ps` and `/proc` show, so a one-word command line from a Node process cannot be read either; a
- * native (Bun) build keeps its arguments, and its one-word command line means `claude` alone.
+ * (exact, with whether its stdout is a terminal), `ps` elsewhere (split on whitespace, which no
+ * channel entry contains), and nothing on Windows. Claude Code sets `process.title` to `claude`,
+ * which under Node overwrites the arguments `ps` and `/proc` show, so a one-word command line from
+ * a Node process cannot be read either; a native (Bun) build keeps its arguments, and its one-word
+ * command line means `claude` alone.
  */
 export function processCommandLine(
   pid: number,
@@ -200,7 +404,17 @@ export function processCommandLine(
       const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8")
         .split("\0")
         .filter((argument) => argument !== "")
-      commandLine = argv.length === 0 ? undefined : { argv, exact: true }
+      const terminal = stdoutIsTerminal(pid)
+      const cwd = workingDirectory(pid)
+      commandLine =
+        argv.length === 0
+          ? undefined
+          : {
+              argv,
+              exact: true,
+              ...(terminal === undefined ? {} : { stdoutIsTerminal: terminal }),
+              ...(cwd === undefined ? {} : { cwd }),
+            }
     } catch {
       commandLine = undefined
     }
@@ -217,6 +431,51 @@ export function processCommandLine(
   return program === "node" || program === "nodejs" ? undefined : commandLine
 }
 
+/** The parent of process `pid`, or undefined when it cannot be read. */
+export function parentProcess(pid: number): number | undefined {
+  try {
+    if (process.platform === "linux") {
+      // The command name, in parentheses, may hold spaces; the parent is the second field after it.
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+      const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+      return Number.isInteger(parent) && parent > 0 ? parent : undefined
+    }
+    if (process.platform === "win32") return undefined
+    const result = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 1_000,
+    })
+    const parent = Number((result.stdout ?? "").trim())
+    return result.status === 0 && Number.isInteger(parent) && parent > 0 ? parent : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** How many processes up from the server `claudeCommandLine` looks for Claude Code. */
+const MAX_CLAUDE_DEPTH = 8
+
+/**
+ * The command line of the Claude Code process that runs this server: the nearest of `pid` and its
+ * ancestors whose program is `claude`, since Claude Code may run the server through a shell prefix
+ * (`CLAUDE_CODE_SHELL_PREFIX`) or a version manager's `bun` shim. Undefined, read as "cannot tell",
+ * when no such process is found or a command line cannot be read.
+ */
+export function claudeCommandLine(
+  pid: number,
+  read: (pid: number) => CommandLine | undefined = processCommandLine,
+  parent: (pid: number) => number | undefined = parentProcess,
+): CommandLine | undefined {
+  let current: number | undefined = pid
+  for (let depth = 0; current !== undefined && current > 1 && depth < MAX_CLAUDE_DEPTH; depth++) {
+    const commandLine = read(current)
+    if (commandLine === undefined) return undefined
+    if (basename(commandLine.argv[0] ?? "") === "claude") return commandLine
+    current = parent(current)
+  }
+  return undefined
+}
+
 /**
  * The marketplace a plugin install path names (`…/plugins/cache/<marketplace>/<plugin>/…`), or
  * undefined for any other path: a source checkout, `--plugin-dir`, or a bare server config.
@@ -229,11 +488,60 @@ export function installedMarketplace(bundlePath: string): string | undefined {
   return undefined
 }
 
-const ManagedChannelSettings = z.object({
-  allowedChannelPlugins: z
-    .array(z.object({ marketplace: z.string(), plugin: z.string() }))
-    .optional(),
-})
+/** The marketplace Claude Code names a plugin it loads with `--plugin-dir` under. */
+export const INLINE_MARKETPLACE = "inline"
+
+/**
+ * The marketplace this plugin, rooted at `pluginRoot`, is loaded from: `inline` when a
+ * `--plugin-dir` value on the `claude` command line names that directory, the plugin cache's
+ * marketplace when `bundlePath` lies in it, and undefined otherwise (a directory-source
+ * marketplace, say), which the gate does not check.
+ */
+export function loadedMarketplace(
+  pluginRoot: string,
+  bundlePath: string,
+  commandLine: { readonly argv: readonly string[]; readonly cwd: string } | undefined,
+): string | undefined {
+  if (commandLine !== undefined) {
+    const { argv, cwd } = commandLine
+    const root = resolve(pluginRoot)
+    for (let index = 1; index < argv.length; index++) {
+      const argument = argv[index] ?? ""
+      if (argument === "--") break
+      const equals = argument.indexOf("=")
+      const flag = equals === -1 ? argument : argument.slice(0, equals)
+      if (flag === "--plugin-dir" || flag === "--plugin-dir-no-mcp") {
+        const value = equals === -1 ? argv[index + 1] : argument.slice(equals + 1)
+        if (value !== undefined && resolve(cwd, value) === root) return INLINE_MARKETPLACE
+      }
+      if (equals === -1) index = lastValueIndex(argv, index)
+    }
+  }
+  return installedMarketplace(bundlePath)
+}
+
+/** One `allowedChannelPlugins` entry as Claude Code accepts it: the documented object, or a
+ *  `plugin@marketplace` string, which it also accepts with a warning. */
+const AllowedChannelEntry = z.union([
+  z.object({ marketplace: z.string(), plugin: z.string() }),
+  z
+    .string()
+    .regex(/^[^@]+@[^@]+$/)
+    .transform((value) => {
+      const at = value.indexOf("@")
+      return { plugin: value.slice(0, at), marketplace: value.slice(at + 1) }
+    }),
+])
+
+/** An `allowedChannelPlugins` value's entries, each invalid one dropped on its own as Claude Code
+ *  drops it; undefined when the value is not a list. */
+function allowedEntries(value: unknown): readonly AllowedChannelPlugin[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((entry: unknown) => {
+    const parsed = AllowedChannelEntry.safeParse(entry)
+    return parsed.success ? [parsed.data] : []
+  })
+}
 
 /** Claude Code's managed settings directory on this platform. */
 export function managedSettingsDirectory(): string {
@@ -247,31 +555,40 @@ export function managedSettingsDirectory(): string {
   }
 }
 
-/** A settings file's `allowedChannelPlugins` (`list`), or undefined when the file is missing, is
- *  not a JSON object, or (with `nonEmpty`) is an empty one. */
-function readChannelSettings(
-  file: string,
-  nonEmpty = false,
-): { readonly list: readonly AllowedChannelPlugin[] | undefined } | undefined {
+interface ChannelSettings {
+  /** The file's `allowedChannelPlugins`, or undefined when it does not set one. */
+  readonly list: readonly AllowedChannelPlugin[] | undefined
+  /** The file's `managedSourcesBehavior`, when it sets one. */
+  readonly behavior: string | undefined
+}
+
+/** A settings file's channel settings, or undefined when the file is missing, is not a JSON
+ *  object, or (with `nonEmpty`) is an empty one. */
+function readChannelSettings(file: string, nonEmpty = false): ChannelSettings | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"))
     if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
     if (nonEmpty && Object.keys(value).length === 0) return undefined
-    const parsed = ManagedChannelSettings.safeParse(value)
-    return { list: parsed.success ? parsed.data.allowedChannelPlugins : undefined }
+    const record = value as Record<string, unknown>
+    const behavior = record["managedSourcesBehavior"]
+    return {
+      list: allowedEntries(record["allowedChannelPlugins"]),
+      behavior: typeof behavior === "string" ? behavior : undefined,
+    }
   } catch {
     return undefined
   }
 }
 
 /**
- * The `allowedChannelPlugins` of the managed settings Claude Code applies, read from files. Its
- * managed tier is "first-wins" by default: the highest-priority source present is the tier alone -
- * server-managed settings (cached as `remote-settings.json` in the config directory), then an MDM
- * profile or the Windows registry, then `managed-settings.json` with its `managed-settings.d`
- * drop-ins. Undefined when the winning source does not set the key, or none is present, which
- * leaves Claude Code's own list. MDM and registry settings are not read; `ENVOY_CHANNEL_LOADED=1`
- * covers an allowlist only they deliver.
+ * The `allowedChannelPlugins` of the managed settings Claude Code applies, read from files.
+ * Server-managed settings (cached as `remote-settings.json` in the config directory) outrank an
+ * MDM profile or the Windows registry, which outrank `managed-settings.json` with its
+ * `managed-settings.d` drop-ins (`.json` files whose names do not start with a dot). Under
+ * `managedSourcesBehavior` "first-wins", the default, the highest source present is the tier
+ * alone; under "merge", the highest source that sets the key owns it. Undefined when that source
+ * does not set the key, or none is present, which leaves Claude Code's own list. MDM and registry
+ * settings are not read; `ENVOY_CHANNEL_LOADED=1` covers an allowlist only they deliver.
  */
 export function channelAllowlist(directories: {
   readonly managedDirectory: string
@@ -281,21 +598,24 @@ export function channelAllowlist(directories: {
     join(directories.configDirectory, "remote-settings.json"),
     true,
   )
-  if (remote !== undefined) return remote.list
   const dropIns = join(directories.managedDirectory, "managed-settings.d")
   let dropInFiles: string[] = []
   try {
     dropInFiles = readdirSync(dropIns)
-      .filter((name) => name.endsWith(".json"))
+      .filter((name) => name.endsWith(".json") && !name.startsWith("."))
       .sort()
       .map((name) => join(dropIns, name))
   } catch {
     dropInFiles = []
   }
-  const lists = [join(directories.managedDirectory, "managed-settings.json"), ...dropInFiles]
-    .map((file) => readChannelSettings(file)?.list)
-    .filter((list) => list !== undefined)
-  return lists.length === 0 ? undefined : lists.flat()
+  const files = [join(directories.managedDirectory, "managed-settings.json"), ...dropInFiles]
+    .map((file) => readChannelSettings(file))
+    .filter((settings) => settings !== undefined)
+  const lists = files.map((settings) => settings.list).filter((list) => list !== undefined)
+  const fileList = lists.length === 0 ? undefined : lists.flat()
+  const behavior = remote?.behavior ?? files.find((settings) => settings.behavior)?.behavior
+  if (remote === undefined) return fileList
+  return behavior === "merge" ? (remote.list ?? fileList) : remote.list
 }
 
 /**
@@ -313,11 +633,24 @@ export function detectClaudeChannel(input: {
   if (override === "0") return { loaded: false, why: "ENVOY_CHANNEL_LOADED=0" }
   const configDirectory =
     input.environment["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude")
-  const plugin = input.environment["CLAUDE_PLUGIN_ROOT"]?.trim()
-    ? { name: "claude-envoy", marketplace: installedMarketplace(input.bundlePath) }
+  const commandLine = claudeCommandLine(input.claudePid)
+  const pluginRoot = input.environment["CLAUDE_PLUGIN_ROOT"]?.trim()
+  const plugin = pluginRoot
+    ? {
+        name: "claude-envoy",
+        // A `--plugin-dir` value is relative to the `claude` process's directory, which only
+        // `/proc` gives, with the exact command line.
+        marketplace: loadedMarketplace(
+          pluginRoot,
+          input.bundlePath,
+          commandLine?.exact && commandLine.cwd !== undefined
+            ? { argv: commandLine.argv, cwd: commandLine.cwd }
+            : undefined,
+        ),
+      }
     : undefined
   return claudeChannelGate({
-    commandLine: processCommandLine(input.claudePid),
+    commandLine,
     plugin,
     allowlist: channelAllowlist({ managedDirectory: managedSettingsDirectory(), configDirectory }),
   })

@@ -1089,7 +1089,9 @@ function BroadcastComposer({
       <RefusableButton
         className="mt-2 narrow-or-short:order-2 narrow-or-short:col-start-3 narrow-or-short:mt-0 narrow-or-short:justify-self-end short:col-start-4"
         describedBy={sendState.notice === null || sendState.refusalOnNotice ? undefined : noticeId}
-        onPress={() => onSend({ input: composed.input, selected: [...selected] })}
+        onPress={() =>
+          onSend({ input: composed.input, selected: [...selected], picked: !defaulted })
+        }
         refusal={sendState.refusal}
         refusalShownBy={sendState.refusalOnNotice ? noticeId : undefined}
       >

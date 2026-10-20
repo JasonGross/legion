@@ -59,32 +59,39 @@ events and sends them to the current Claude Code session as supported
   A plain session whose channel Claude Code did not load registers no capability. Claude Code never
   tells a server whether it loaded its channel: the MCP handshake is the same either way, and a
   notification sent while it is not loaded is dropped without a word, so Dispatch would record an
-  Aside to that session as sent while the model never saw it. The server therefore reads its
-  `claude` process's command line (`src/claude-channel.ts`) and applies Claude Code's gate as of
-  2.1.287: an entry naming this plugin (from a bare MCP config, any `server:` entry) in
-  `--channels`, or in `--dangerously-load-development-channels` outside `-p`; the marketplace the
-  plugin is installed from; and, for `--channels`, an `allowedChannelPlugins` entry in the highest
-  managed settings source present (the cached `remote-settings.json`, else `managed-settings.json`
-  with its `managed-settings.d/` drop-ins). With no capability the listener refuses every targeted
-  delivery (`session … does not advertise aside`), Dispatch shows the session as taking no
-  messages, and the server says why on stderr and in its MCP instructions. `ENVOY_CHANNEL_LOADED=1`
-  or `0` overrides the check, for an allowlist an MDM profile delivers. A command line it cannot
-  read counts as loaded, and so does a one-word one from a Claude Code that runs on Node, whose
-  `process.title = "claude"` overwrites the arguments. A Legion pane whose deliveries go to the
-  bridge's inbox needs no channel, so the check does not apply there.
+  Aside to that session as sent while the model never saw it. The server therefore reads the
+  command line of the `claude` process that runs it (`src/claude-channel.ts`; the nearest ancestor
+  whose program is `claude`, since Claude Code may run the server through a shell prefix or a
+  `bun` shim) and applies Claude Code's gate as of 2.1.301: an entry naming this plugin (from a
+  bare MCP config, any `server:` entry) in `--channels`, or in
+  `--dangerously-load-development-channels` in an interactive session (no `-p`, `--print`,
+  `--init-only` or `--sdk-url` option, and, where `/proc` shows it, a terminal on stdout), the
+  arguments read as Claude Code's own scanner reads them; the marketplace the plugin is loaded from
+  (`inline` for `--plugin-dir`, else the plugin cache's, compared as Claude Code names its cache
+  directory); and, for `--channels`, an `allowedChannelPlugins` entry (an object, or a
+  `plugin@marketplace` string; an invalid entry is dropped alone) from the managed settings
+  source that owns it: the cached `remote-settings.json`, else `managed-settings.json` with its
+  `managed-settings.d/` drop-ins (`.json` names not starting with a dot), and under
+  `managedSourcesBehavior: "merge"` the highest of them that sets the key. With no capability the
+  listener refuses every targeted delivery (`session … does not advertise aside`), Dispatch shows
+  the session as taking no messages, and the server says why on stderr and in its MCP
+  instructions. `ENVOY_CHANNEL_LOADED=1` or `0` overrides the check, for an allowlist an MDM
+  profile delivers. A command line it cannot read, or no `claude` among the server's ancestors,
+  counts as loaded, and so does a one-word command line from a Claude Code that runs on Node,
+  whose `process.title = "claude"` overwrites the arguments. A Legion pane whose deliveries go to
+  the bridge's inbox needs no channel, so the check does not apply there.
 
   The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
   off for the account (not signed in, or an account without the channels feature), for a
   third-party provider (Bedrock, Vertex or Foundry), and for an organization whose managed settings
-  do not set `channelsEnabled: true`; it ignores `--dangerously-load-development-channels` in a
-  non-interactive session (`-p`, which the check does see, or stdout that is not a terminal, which it
-  does not); and it skips a channel on a connection that negotiated an MCP protocol revision with
-  no unsolicited notifications. It then shows
-  `--dangerously-load-development-channels ignored` (or `--channels ignored`) with the reason when
-  the session starts, and drops every notification. The server sees the flag on the command line,
-  counts the channel as loaded and still advertises Aside, so Dispatch records a message to that
-  session as sent while the model never sees it. If the session shows that warning, start it with
-  `ENVOY_CHANNEL_LOADED=0` so it advertises no delivery mode.
+  do not set `channelsEnabled: true`; outside Linux it cannot tell whether stdout is a terminal;
+  Claude Code skips a channel on a connection that negotiated an MCP protocol revision with no
+  unsolicited notifications; and the check runs once at startup, so a channel an SDK host turns on
+  later is not seen. Claude Code then shows `--dangerously-load-development-channels ignored` (or
+  `--channels ignored`) with the reason when the session starts, and drops every notification. The
+  server still advertises Aside, so Dispatch records a message to that session as sent while the
+  model never sees it. If the session shows that warning, start it with `ENVOY_CHANNEL_LOADED=0`
+  so it advertises no delivery mode.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.

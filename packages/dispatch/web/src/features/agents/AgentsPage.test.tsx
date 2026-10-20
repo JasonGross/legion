@@ -2095,6 +2095,44 @@ test("Restore draft re-sends the refused request word for word, and the first ed
   }
 });
 
+test("Restore draft keeps a mode the sender did not pick unpicked, so it still follows the selection", async () => {
+  const page = renderAgents();
+  page.createBroadcast.mockImplementationOnce(async () => {
+    throw new Error("Envoy listener unreachable");
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const broadcast = () => within(region).getByRole("region", { name: "Broadcast" });
+    const mode = () =>
+      within(broadcast()).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    // The Reviewer takes Aside alone, so the selection's own mode is Aside.
+    fireEvent.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    fireEvent.change(within(broadcast()).getByRole("textbox", { name: "Broadcast message" }), {
+      target: { value: "Report status." },
+    });
+    expect(mode().value).toBe("aside");
+    fireEvent.click(screen.getByRole("button", { name: "Send to 1" }));
+    const sends = await screen.findByRole("region", { name: "Sends" });
+    await within(sends).findByText("Could not send to 1 agent: Envoy listener unreachable");
+    fireEvent.click(within(sends).getByRole("button", { name: "Restore draft" }));
+
+    expect(mode().value).toBe("aside");
+    expect(within(broadcast()).getByText(/^Sending as Aside: Reviewer/)).toBeTruthy();
+    // Still the selection's: with only the Planner, which takes BTW, it is BTW again.
+    fireEvent.click(within(region).getByRole("checkbox", { name: "Select Planner for broadcast" }));
+    fireEvent.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    expect(mode().value).toBe("btw");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a selected agent that went away does not change what Restore draft re-sends, and the composer says so", async () => {
   const [planner, reviewer] = agents;
   const listening = { ...reviewer, capabilities: ["aside", "btw"] };

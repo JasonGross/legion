@@ -4,11 +4,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  asksForPrintMode,
   type CommandLine,
   channelAllowlist,
   claudeChannelEntries,
   claudeChannelGate,
+  claudeCommandLine,
   installedMarketplace,
+  loadedMarketplace,
   processCommandLine,
 } from "../src/claude-channel"
 
@@ -44,6 +47,106 @@ test("ignores a development channel in a print-mode session, but only on an exac
   expect(claudeChannelEntries(argv, true)).toEqual([])
   // `ps` output split on whitespace: a `-p` may be a word of a prompt, so the entry stays.
   expect(claudeChannelEntries(argv, false)).toHaveLength(1)
+})
+
+test("print mode is read as Claude Code reads it: an option, not another option's value, before --", () => {
+  expect(asksForPrintMode(["claude", "-p", "hi"])).toBe(true)
+  expect(asksForPrintMode(["claude", "--print"])).toBe(true)
+  expect(asksForPrintMode(["claude", "--sdk-url=ws://x"])).toBe(true)
+  expect(asksForPrintMode(["claude", "--init-only"])).toBe(true)
+  // `-p` as the value of `--name`, and `-p` after `--`, are not print mode.
+  expect(asksForPrintMode(["claude", "--name", "-p"])).toBe(false)
+  expect(asksForPrintMode(["claude", "--", "-p"])).toBe(false)
+  const dev = ["--dangerously-load-development-channels", "plugin:claude-envoy@inline"]
+  expect(claudeChannelEntries(["claude", "--name", "-p", ...dev])).toHaveLength(1)
+  expect(claudeChannelEntries(["claude", ...dev, "--", "-p"])).toHaveLength(1)
+})
+
+test("a development channel is dropped when the session's stdout is not a terminal", () => {
+  const argv = ["claude", "--dangerously-load-development-channels", "plugin:claude-envoy@inline"]
+  expect(claudeChannelEntries(argv, true, false)).toEqual([])
+  expect(claudeChannelEntries(argv, true, true)).toHaveLength(1)
+  expect(claudeChannelEntries(argv, true, undefined)).toHaveLength(1)
+})
+
+test("--channels entries come first, and a flag after -- is a positional argument", () => {
+  expect(
+    claudeChannelEntries([
+      "claude",
+      "--dangerously-load-development-channels",
+      "plugin:claude-envoy@legion-plugins",
+      "--channels",
+      "plugin:claude-envoy@legion-plugins",
+    ]).map((entry) => entry.dev),
+  ).toEqual([false, true])
+  expect(
+    claudeChannelEntries(["claude", "--", "--channels", "plugin:claude-envoy@legion-plugins"]),
+  ).toEqual([])
+  // A value-taking option's value is not read as a flag.
+  expect(claudeChannelEntries(["claude", "--model", "--channels=plugin:x@y"])).toEqual([])
+})
+
+test("Claude Code is found among the server's ancestors, through a shell prefix or a shim", () => {
+  const lines: Record<number, CommandLine> = {
+    30: { argv: ["/bin/sh", "/home/u/.shims/bun", "server.js"], exact: true },
+    20: { argv: ["/bin/sh", "-c", "bun server.js"], exact: true },
+    10: { argv: ["claude", "--channels", "plugin:claude-envoy@legion-plugins"], exact: true },
+  }
+  const parents: Record<number, number> = { 30: 20, 20: 10, 10: 1 }
+  expect(
+    claudeCommandLine(
+      30,
+      (pid) => lines[pid],
+      (pid) => parents[pid],
+    )?.argv[0],
+  ).toBe("claude")
+  // No `claude` among them, or a command line that cannot be read: cannot tell.
+  expect(
+    claudeCommandLine(
+      30,
+      (pid) => (pid === 10 ? undefined : lines[pid]),
+      (pid) => parents[pid],
+    ),
+  ).toBeUndefined()
+  expect(claudeChannelGate({ commandLine: undefined, plugin, allowlist: undefined })).toEqual({
+    loaded: true,
+  })
+})
+
+test("a plugin loaded with --plugin-dir is named @inline, so another marketplace does not load it", () => {
+  const argv = ["claude", "--plugin-dir", "plugins/claude-envoy"]
+  expect(
+    loadedMarketplace("/w/plugins/claude-envoy", "/w/plugins/claude-envoy/dist/x.js", {
+      argv,
+      cwd: "/w",
+    }),
+  ).toBe("inline")
+  expect(
+    loadedMarketplace("/w/plugins/claude-envoy", "/w/plugins/claude-envoy/dist/x.js", {
+      argv: ["claude", "--plugin-dir=/w/plugins/claude-envoy"],
+      cwd: "/",
+    }),
+  ).toBe("inline")
+  expect(
+    loadedMarketplace(
+      "/c/plugins/cache/legion-plugins/claude-envoy/abc",
+      "/c/plugins/cache/legion-plugins/claude-envoy/abc/dist/x.js",
+      { argv, cwd: "/w" },
+    ),
+  ).toBe("legion-plugins")
+  expect(
+    claudeChannelGate({
+      commandLine: exact(
+        "--dangerously-load-development-channels",
+        "plugin:claude-envoy@legion-plugins",
+      ),
+      plugin: { name: "claude-envoy", marketplace: "inline" },
+      allowlist: undefined,
+    }),
+  ).toEqual({
+    loaded: false,
+    why: "claude asked for plugin:claude-envoy@legion-plugins but this plugin is installed from inline",
+  })
 })
 
 test("a session started without either flag has no channel", () => {
@@ -174,6 +277,34 @@ test("the highest managed settings source present is the allowlist alone", async
     // Server-managed settings outrank the file, even when they set no allowlist.
     await writeFile(join(config, "remote-settings.json"), JSON.stringify({ model: "y" }))
     expect(channelAllowlist(directories)).toBe(undefined)
+    // Under "merge", the highest source that sets the key owns it.
+    await writeFile(
+      join(config, "remote-settings.json"),
+      JSON.stringify({ model: "y", managedSourcesBehavior: "merge" }),
+    )
+    expect(channelAllowlist(directories)).toEqual(ORG_LIST)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("an allowlist takes Claude Code's string entries, drops each invalid one alone, and skips dot files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "claude-channel-"))
+  try {
+    const managed = join(root, "managed")
+    const directories = { managedDirectory: managed, configDirectory: join(root, "config") }
+    await mkdir(join(managed, "managed-settings.d"), { recursive: true })
+    await writeFile(
+      join(managed, "managed-settings.json"),
+      JSON.stringify({
+        allowedChannelPlugins: ["claude-envoy@legion-plugins", { marketplace: "x" }, 7],
+      }),
+    )
+    await writeFile(
+      join(managed, "managed-settings.d", ".off.json"),
+      JSON.stringify({ allowedChannelPlugins: [{ marketplace: "dot", plugin: "file" }] }),
+    )
+    expect(channelAllowlist(directories)).toEqual(ORG_LIST)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

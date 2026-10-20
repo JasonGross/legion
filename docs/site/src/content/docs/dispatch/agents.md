@@ -99,11 +99,11 @@ A broadcast sends one message to many agents.
 
 Until you pick a mode, a broadcast goes as a BTW, or as an Aside when every agent you selected that
 takes any mode takes Aside and one of them does not take BTW (a Claude Code session, for example).
-Select a Claude Code session together with an agent that takes only BTW, and the broadcast stays a
-BTW and leaves the Claude Code session out. The box then says "Sending as Aside" and
-names that agent. An agent that does not take the mode the broadcast goes in is left out, and its
-chip says why; once you pick a mode, Dispatch never switches it to another. One broadcast reaches
-at most 100 agents.
+The box then says "Sending as Aside" and names that agent. Select a Claude Code session together
+with an agent that takes only BTW, and the broadcast stays a BTW and leaves the Claude Code session
+out. An agent that does not take the mode the broadcast goes in is left out, and its chip says why;
+once you pick a mode, Dispatch never switches it to another. One broadcast reaches at most 100
+agents.
 
 Your selection is what you ticked, not what the filters show. Narrowing the filters after you tick
 does not drop anyone; the count beside the checkbox says how many selected agents are outside the

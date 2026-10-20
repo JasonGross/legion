@@ -64,7 +64,7 @@ export function useBroadcastComposition(): BroadcastComposition {
     restore: (send) =>
       setState((current) => ({
         ...current,
-        delivery: send.input.delivery,
+        delivery: send.picked ? send.input.delivery : null,
         draft: send.input.body,
         restored: send.input,
         selected: new Set(send.selected),
