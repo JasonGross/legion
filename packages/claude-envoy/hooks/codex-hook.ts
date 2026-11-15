@@ -1,5 +1,5 @@
-// The Codex CLI's `SessionStart` hook for the Envoy plugin (INFRA-3558): `codex/hooks.json` runs
-// `dist/codex-hook.js session-start` at a session's first prompt and again after `/new`.
+// The Codex CLI's `SessionStart` hook for the Envoy plugin (INFRA-3558): `codex/hooks/hooks.json`
+// runs `dist/codex-hook.js session-start` at a session's first prompt and again after `/new`.
 //
 // It records which session the `codex` process now runs, where the plugin's MCP server reads it
 // (`../src/codex/codex-session-record`): the server is that process's child too, but Codex hands
@@ -8,7 +8,7 @@
 // it follows a Claude Code `/clear`. Then it tells the model this session's open Dispatch asks and
 // how to run `dispatch` here, as plain output, which Codex adds to the model's context (measured on
 // 0.154.0). The dispatch-first skill and the answers list come from `dist/session-hook.js`, which
-// `codex/hooks.json` runs beside this. It always exits 0: a session must start without Envoy.
+// `codex/hooks/hooks.json` runs beside this. It always exits 0: a session must start without Envoy.
 
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
@@ -97,7 +97,9 @@ if (import.meta.main) {
   const [mode] = process.argv.slice(2)
   try {
     if (mode !== "session-start") {
-      throw new Error(`unknown mode ${JSON.stringify(mode)}; codex/hooks.json names session-start`)
+      throw new Error(
+        `unknown mode ${JSON.stringify(mode)}; codex/hooks/hooks.json names session-start`,
+      )
     }
     await sessionStart(JSON.parse(await Bun.stdin.text()))
   } catch (error) {

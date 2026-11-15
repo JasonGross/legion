@@ -621,9 +621,9 @@ Each item below names a task and where its code is, then notes on it.
   `@sjawhar/pi-envoy`: the Envoy and Dispatch tools every session loads.
   See `packages/pi-envoy/AGENTS.md`
 
-- Codex CLI plugin — `packages/claude-envoy/` (`.codex-plugin/plugin.json`, `codex/hooks.json`, `src/codex/`)
+- Codex CLI plugin — `packages/claude-envoy/` (`codex/`, `src/codex/`, `scripts/build.ts --codex-out`)
 
-  The Claude Code plugin package is also the Codex CLI's Envoy and Dispatch plugin: a Codex session registers with Envoy under its own session id, shows on the Agents page, takes messages through `codex queue` and a `PostToolUse` hook, and reaches Dispatch through the plugin's `dispatch` tool, since Codex's sandbox keeps shell commands off the network.
+  The Codex CLI's Envoy and Dispatch plugin, `@sjawhar/codex-envoy`, is a package of its own built from the Claude Code plugin's source and released with it, since one directory cannot follow both hosts' plugin rules: a Codex session registers with Envoy under its own session id, shows on the Agents page, takes messages through `codex queue` and a `PostToolUse` hook, and reaches Dispatch through the plugin's `dispatch` tool, since Codex's sandbox keeps shell commands off the network.
   See `packages/claude-envoy/AGENTS.md`, "The Codex CLI host"
 
 - Legion OMP plugin — `packages/pi-legion/`
@@ -791,7 +791,7 @@ Each item below names a task and where its code is, then notes on it.
   An open pull request that added an entry under the old `## [Unreleased]` heading (now `## Before changelog fragments`) moves the entry into a fragment the next time it merges main
 
 - **Deploys come only from main** — everything a deployment runs is built from a commit on `main`:
-  a release made by a release workflow running on `refs/heads/main` (the `legion` binary from `release.yaml`, the worker image from `worker-image.yaml`, the Envoy image and its listener release from `release-envoy-listener.yaml`, the `envoy-infra` Pulumi plugin from `release-envoy-infra.yaml`, and the three npm plugins — `@sjawhar/pi-envoy`, `@sjawhar/pi-legion` and `@sjawhar/claude-envoy` — from `release.yaml`'s `*_build` jobs and its one `publish` job, which run only on main).
+  a release made by a release workflow running on `refs/heads/main` (the `legion` binary from `release.yaml`, the worker image from `worker-image.yaml`, the Envoy image and its listener release from `release-envoy-listener.yaml`, the `envoy-infra` Pulumi plugin from `release-envoy-infra.yaml`, and the four npm plugins — `@sjawhar/pi-envoy`, `@sjawhar/pi-legion`, `@sjawhar/claude-envoy` and `@sjawhar/codex-envoy`, the last packed by `claude_envoy_build` — from `release.yaml`'s `*_build` jobs and its one `publish` job, which run only on main).
   Nothing commits a built artifact anywhere: every release is recorded by its tag, and `packages/claude-envoy`'s built `dist/` and `legion/` are built in its release's build job and packed into the npm tarball, so a deployment takes the plugin from the published package rather than from any checkout or branch.
   Keep no long-lived integration or deployment branch:
   a fix a deployment needs merges to `main` through a pull request and ships in the next release, never from the branch it was written on, and a change meant for one deployment is a pull request against `main` like any other.

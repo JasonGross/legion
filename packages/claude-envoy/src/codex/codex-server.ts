@@ -51,7 +51,7 @@ import { followTranscript, type TranscriptFollower, transcriptEvents } from "./c
 import { createCodexUserTurnRouter } from "./codex-user-turns"
 
 /**
- * The Envoy plugin's MCP server under the Codex CLI (INFRA-3558): `.codex-plugin/plugin.json`
+ * The Envoy plugin's MCP server under the Codex CLI (INFRA-3558): `codex/.codex-plugin/plugin.json`
  * starts `dist/envoy-channel.js --host codex` in the plugin's own directory, as a child of the
  * `codex` process.
  *

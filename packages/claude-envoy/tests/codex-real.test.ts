@@ -1,7 +1,7 @@
-// The Codex plugin on the real Codex CLI binary (INFRA-3558): a fresh `scripts/build.ts --out`
-// build of this tree installed from a local marketplace into a Codex home of the test's own, run
-// with `codex exec` against a stand-in for OpenAI's Responses API. It proves what no other test
-// can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
+// The Codex plugin on the real Codex CLI binary (INFRA-3558): a fresh `scripts/build.ts
+// --codex-out` build of this tree, the `@sjawhar/codex-envoy` package, installed from a local
+// marketplace into a Codex home of the test's own, run with `codex exec` against a stand-in for
+// OpenAI's Responses API. It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
 // reads, that the session record lands where the MCP server looks for it, that a message waiting
 // in the inbox reaches the model in the very next request of the running turn, and that a side
 // question runs in an ephemeral fork with the plugin off.
@@ -104,7 +104,11 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
         'model = "standin-model"',
         'model_provider = "standin"',
         'approval_policy = "never"',
-        'sandbox_mode = "workspace-write"',
+        // Off, so the stand-in's command runs on any host: Codex's Linux sandbox re-executes Codex
+        // inside bubblewrap as `codex-linux-sandbox`, which fails on a host whose bubblewrap cannot
+        // find that name (measured on a dev box under 0.154.0), and the test would then see a
+        // failed call. The command is the test's own and the plugin's hooks are what it proves.
+        'sandbox_mode = "danger-full-access"',
         "[model_providers.standin]",
         'name = "standin"',
         `base_url = "http://127.0.0.1:${model.port}/v1"`,
@@ -121,26 +125,26 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
         plugins: [
           {
             category: "Productivity",
-            name: "claude-envoy",
-            policy: { installation: "AVAILABLE" },
-            source: { path: "./plugins/claude-envoy", source: "local" },
+            name: "codex-envoy",
+            policy: { authentication: "ON_INSTALL", installation: "AVAILABLE" },
+            source: { path: "./plugins/codex-envoy", source: "local" },
           },
         ],
       }),
     )
     const build = Bun.spawnSync(
-      [process.execPath, "scripts/build.ts", "--out", join(market, "plugins", "claude-envoy")],
+      [process.execPath, "scripts/build.ts", "--codex-out", join(market, "plugins", "codex-envoy")],
       { cwd: packageRoot, stderr: "pipe" },
     )
     if (build.exitCode !== 0) throw new Error(`build failed: ${build.stderr.toString()}`)
     for (const argv of [
       ["plugin", "marketplace", "add", market],
-      ["plugin", "add", "claude-envoy@legion-test"],
+      ["plugin", "add", "codex-envoy@legion-test"],
     ]) {
       const ran = Bun.spawnSync([codex as string, ...argv], { env: environment(), stderr: "pipe" })
       if (ran.exitCode !== 0) throw new Error(`codex ${argv.join(" ")}: ${ran.stderr.toString()}`)
     }
-    pluginData = join(codexHome, "plugins", "data", "claude-envoy-legion-test")
+    pluginData = join(codexHome, "plugins", "data", "codex-envoy-legion-test")
   }, 300_000)
 
   afterAll(() => {
@@ -192,9 +196,13 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
       const carried = turn.findIndex((request) =>
         JSON.stringify(request.input).includes("INBOX LINE FOR THE RUNNING TURN"),
       )
-      // The request after the tool call, not a later turn: it also carries the call's output.
+      // The request after the tool call, not a later turn: it also carries the call's output,
+      // which is the command's own and not the prompt's text.
       expect(carried).toBeGreaterThan(0)
-      expect(JSON.stringify(turn[carried]?.input)).toContain("slept")
+      const outputs = (turn[carried]?.input ?? []).filter(
+        (item) => item["type"] === "function_call_output",
+      )
+      expect(JSON.stringify(outputs)).toMatch(/exited with code 0[\s\S]*slept/)
       // The dispatch-first skill and the session note reach the model only with Dispatch on; this
       // home has none, so the record is all the session-start hook was asked for.
       expect(readFileSync(record.transcript_path ?? "", "utf8")).toContain("task_complete")

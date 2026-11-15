@@ -6,11 +6,13 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
+import codexMarketplace from "../../../.agents/plugins/marketplace.json" with { type: "json" }
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
-import codexPlugin from "../.codex-plugin/plugin.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
-import codexHooks from "../codex/hooks.json" with { type: "json" }
+import codexPlugin from "../codex/.codex-plugin/plugin.json" with { type: "json" }
+import codexHooks from "../codex/hooks/hooks.json" with { type: "json" }
+import codexPkg from "../codex/package.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
 import {
@@ -475,8 +477,10 @@ test("the committed manifests declare no version the release would have to bump;
   expect(marketplaceEntries[0]).not.toHaveProperty("version")
   expect(ompPlugin.version).toBe(pkg.version)
   // The Codex CLI names its plugin cache directory by this version and reinstalls when it changes
-  // (measured on 0.154.0), so release.yaml writes the release's version into it as well.
+  // (measured on 0.154.0), so release.yaml writes the release's version into it as well, and into
+  // the Codex package's own package.json, which publishes it at the same version as this one.
   expect(codexPlugin.version).toBe(pkg.version)
+  expect(codexPkg.version).toBe(pkg.version)
   expect(MCP_SERVER_INFO).toEqual({ name: "envoy", version: pkg.version })
 })
 
@@ -491,7 +495,8 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   expect(envoy.env_vars).toContain("ENVOY_CONFIG_FILE")
   expect(envoy.env_vars).toContain("XDG_CONFIG_HOME")
   expect(envoy.tools).toEqual({ dispatch: { approval_mode: "approve" } })
-  expect(codexPlugin.hooks).toBe("./codex/hooks.json")
+  // Codex's validator refuses a manifest `hooks` field; with none, Codex reads hooks/hooks.json.
+  expect(codexPlugin).not.toHaveProperty("hooks")
   const commands = Object.values(codexHooks.hooks).flatMap((groups) =>
     groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
   )
@@ -516,6 +521,21 @@ test("the marketplace entry installs the plugin from npm, by name, above the pla
   expect(source?.source).toBe("npm")
   expect(source?.package).toBe(pkg.name)
   const range = source?.version ?? ""
+  expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
+  expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
+  expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
+})
+
+test("the Codex marketplace entry installs the Codex package from npm, above the placeholder", () => {
+  // Codex reads .agents/plugins/marketplace.json in place of .claude-plugin/marketplace.json when
+  // a repository has both (measured on 0.154.0). The range is the Claude Code entry's, for the
+  // reasons the test above gives: the Codex package's first publish is a placeholder too.
+  expect(codexMarketplace.plugins).toHaveLength(1)
+  const entry = codexMarketplace.plugins[0]
+  expect(entry?.name).toBe(codexPlugin.name)
+  expect(entry?.source.source).toBe("npm")
+  expect(entry?.source.package).toBe(codexPkg.name)
+  const range = entry?.source.version ?? ""
   expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
   expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
   expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)

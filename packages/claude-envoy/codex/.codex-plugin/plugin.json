@@ -1,11 +1,15 @@
 {
-  "name": "claude-envoy",
+  "name": "codex-envoy",
   "version": "1.0.0",
   "description": "Put Envoy and Dispatch messages into the Codex session's own conversation, show it on Dispatch's Agents page, and expose the Envoy and dispatch tools.",
+  "author": {
+    "name": "Legion",
+    "url": "https://github.com/cybermonklabs/legion"
+  },
   "license": "Apache-2.0",
   "repository": "https://github.com/cybermonklabs/legion",
+  "keywords": ["envoy", "dispatch", "legion"],
   "skills": "./skills/",
-  "hooks": "./codex/hooks.json",
   "mcpServers": {
     "envoy": {
       "command": "bun",
@@ -39,8 +43,10 @@
   "interface": {
     "displayName": "Envoy",
     "shortDescription": "This session on Dispatch's Agents page, with its messages",
+    "longDescription": "Registers this Codex session with Envoy under its own session id, so it shows on Dispatch's Agents page with a live view of its conversation. Messages sent to the session from the Agents page (Aside, BTW and Steer) and messages on Dispatch issues routed to it arrive in its conversation, and the dispatch tool runs the dispatch command as this session. Ships the Dispatch skills.",
     "developerName": "Legion",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Write"]
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["Use $dispatch-first to find the Dispatch issue for this work."]
   }
 }

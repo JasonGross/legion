@@ -219,13 +219,22 @@ human approval surface.
 
 ## Codex CLI
 
-The same package is a Codex CLI plugin (INFRA-3558). Codex reads the repository's
-`.claude-plugin/marketplace.json` and installs the package from npm as Claude Code does:
+The Codex CLI plugin (INFRA-3558) is a package of its own, `@sjawhar/codex-envoy`, built from
+this package's source and released with it at the same version. One package cannot be both:
+Codex's plugin validator refuses a manifest that names its hooks file, so Codex's hooks sit at
+`hooks/hooks.json`, where Claude Code reads its own, and an npm install takes a package's root.
+Codex reads the repository's `.agents/plugins/marketplace.json`, which names that package:
 
 ```bash
 codex plugin marketplace add cybermonklabs/legion
-codex plugin add claude-envoy@legion-plugins
+codex plugin add codex-envoy@legion-plugins
 ```
+
+`bun scripts/build.ts --codex-out <dir>` builds it from this tree into a directory outside the
+repository: `codex/`'s manifests, hooks and README, this package's skills and a fresh `dist/`.
+A skill that sets `disable-model-invocation: true`, which Codex's validator refuses, is shipped
+with Codex's own form of it, an `agents/openai.yaml` whose `policy.allow_implicit_invocation`
+is `false`: the skill stays out of the model's context until a person names it as `$<skill>`.
 
 Start `codex` as usual and trust the plugin's hooks when Codex asks (it asks again after an update
 that changes them; an untrusted hook does not run). The session reads the same envoy.json as every
@@ -236,7 +245,7 @@ gives each plugin (`plugins/data/`), and adds to Codex's message queue through `
 it never touches Codex's configuration.
 Measured on Codex CLI 0.154.0.
 
-- `.codex-plugin/plugin.json` names the skills, `codex/hooks.json` and one MCP server,
+- `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
   Codex expands no `${PLUGIN_ROOT}` in a server's arguments). Codex hands a plugin's server only
   `HOME`, `PATH` and a few more, so `env_vars` names the ones the server reads.
