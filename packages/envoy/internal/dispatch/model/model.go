@@ -1245,6 +1245,15 @@ const (
 	CommitUnknown     = "unknown"
 )
 
+// CurrencyCurrent and CurrencyOlder are the two words of CheckResult.Currency, the
+// compatibility field the results read answers for `dispatch` clients older than pi-envoy
+// 17.1.0. Those clients print the field beside each result and read nothing of the comparison
+// (api/results_currency.go).
+const (
+	CurrencyCurrent = "current"
+	CurrencyOlder   = "older"
+)
+
 // PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
 // whether a pass of it stands at what the check compared its results with.
 const (
@@ -1337,6 +1346,11 @@ type CheckResult struct {
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+	// Currency is a compatibility field, derived from the three above only on GET
+	// /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy
+	// 17.1.0. It is left out wherever neither word is true (api/results_currency.go), and
+	// removed once no client older than pi-envoy 17.1.0 is in use.
+	Currency string `json:"currency,omitempty" enum:"current,older" description:"A compatibility field answered only by GET /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy 17.1.0, which print it beside each result and read none of commit_stands, check_words_moved and retracted; read those instead. current: commit_stands is at_basis, check_words_moved is false and no retraction stands. older: commit_stands is other_commit, or it is at_basis and check_words_moved is true. Left out otherwise (commit_stands unknown, a retracted result at its basis under the check's words now). It is removed once no client older than pi-envoy 17.1.0 is in use."`
 }
 
 // CheckResultRetraction is the record that says one stored result is wrong
