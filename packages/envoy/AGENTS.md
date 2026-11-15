@@ -14,7 +14,8 @@ Envoy owns transport, routing, delivery, and the native Dispatch event path:
 - ingests Slack, GitHub, Ghost Wispr, and agent events
 
 - publishes ordinary notifications through JetStream;
-  `POST /v1/messages/publish` refuses by name every `notifications.` topic no stream subject captures, other than a role lane, and forwards a role message to its holder's agent subject, where the stream stores it for the holder's own consumer, answering once the stream stored the forward, or 504
+  `POST /v1/messages/publish` refuses by name every `notifications.` topic no stream subject captures, other than a role lane, and forwards a role message to its holder's agent subject, where the stream stores it for the holder's own consumer, answering once the stream stored the forward, or 504.
+  A publish the stream stores for its subscribers also answers how many sessions the message is for (`recipients` and `recipients_connected`, the Listener API's `/v1/messages/publish` row)
 
 - resolves target agent sessions
 
@@ -94,7 +95,9 @@ Each item below names a task and where its code is, then notes on it.
   `ENVOY_NATS_REPLICAS`, the deployment's replica count:
   a whole number from 1 to 5 (`bus.MaxReplicas`, which aws:WebhookListener's rendering also refuses above), default 1;
   0, a negative number, more than 5 or a word refuses startup naming the variable.
-  The stream and every bucket Envoy opens (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_ci_state`, `envoy_dpop_proofs`, `envoy_webhook_redelivery`) are created at it, and one found with fewer copies is raised to it, at start and by the owning program's keeper every 30 seconds; more than 1 needs a clustered NATS.
+  The stream and every bucket Envoy opens (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state`, `envoy_dpop_proofs`, `envoy_webhook_redelivery`) are created at it, and one found with fewer copies is raised to it by the owning program's keeper every 30 seconds, and at start as well for every one but `envoy_known_sessions`:
+  a listener's start opens an existing `envoy_known_sessions` as it finds it and creates the bucket only when it is missing (`openKnownBucket`, `internal/session/known.go`), so the keeper alone raises that bucket's copies.
+  More than 1 needs a clustered NATS.
   `ENVOY_STREAM_MAX_BYTES`: a positive whole number of bytes, the stream's byte limit, past which a full stream refuses new publishes (`DiscardNew`;
   the retryable `bus.ErrStreamFull`) and keeps every stored message until it is 72 hours old.
   A GitHub webhook a full stream refuses is answered 503, and Dispatch's redelivery sweep (`internal/dispatch/redeliver`) asks GitHub to resend it, so it comes back once the stream has room;
@@ -1488,7 +1491,7 @@ the attempt is committed first, sent, and settled by a second short transaction,
 
 Both delivery paths are that pair, and the same claim.
 A comment mention's attempt is the `comment_deliveries` row the creating transaction commits as `pending` and claimed (`claimed_at`, migration `0046`), and the create answers with it still `pending`;
-the post-commit sender takes that claim over - and every later `POST /api/v1/comments/{id}/deliveries` retry takes one of its own - resolves, records that resolution on the claimed row, sends, and records `sent` or `failed` with its `comment.delivery` event in a second transaction.
+the post-commit sender takes that claim over - and every later `POST /api/v1/comments/{id}/deliveries` retry takes one of its own - resolves, records that resolution on the claimed row, sends, and records `sent`, `queued` or `failed` with its `comment.delivery` event in a second transaction.
 A session the comment's creation skipped on the issue's route because a mention delivers to it (`suppress_route`), or that a mention of the comment names, hears the comment once:
 from the mention, or, when the mention's send fails, from the copy that route sends.
 The outbox decides that copy when it publishes, by the mention rule (`destinations.leftToMention`, below), read from the comment's attempt rows and never from the payload's mentions:
@@ -1545,6 +1548,30 @@ then `recordPendingMessageDelivery` claims that attempt, or opens one for a Retr
 the send follows, and `completeMessageDelivery` settles it with the `message.delivery` event.
 Either way the pending row names the session its frame is going to before that frame is sent, and each of those statements is its own short transaction or single pooled read, so no step of a delivery holds a connection across another.
 A request's own send runs on `context.WithoutCancel` of the request's context, so a connection cut after the commit (a closed tab, a front-door roll) does not stop it.
+
+An attempt settles in one of four states (`deliveryOutcome`, `api/envoy_resolve.go`, migration `20261114081434`):
+`pending` before its send, then `sent`, `queued` or `failed`.
+`sent` and `queued` both say the listener took the message, and every reader that asks whether it took it counts the two alike:
+the outbox publishes no second copy of a comment (`mentionDeliveryQuery`), the delivery sweep resumes neither and settles neither failed (`owedMessageAttempt`, `owedCommentAttempt`), the session's answers list holds both (`sessionanswers.query`), and the session may accept either as its own turn (`acceptDelivery`).
+They differ in one thing:
+a `sent` message is with a session that is running now, and a `queued` one waits in the consumer of a session the listener knows and that is not running, which gets it when it runs again, within the 72 hours the stream keeps it.
+Only a `failed` attempt is retried, since a queued one is already stored and a repeat would store a second copy for the same session to read.
+The send's own answer decides `queued`, not the registry read before it, so a session whose read showed it live and whose process had gone by the send is recorded `queued` too.
+A delivery reads its session through `SessionIncludingStopped` (`internal/dispatch/envoy/client.go`, `include=unresponsive,stopped` on `GET /v1/registry/<session_id>`), so a session the listener knows only by its record is a target like any other, judged by the record's capabilities (`advertisesDelivery`), and so is each recipient a broadcast names;
+a role resolves through `Role` alone, since a stopped session holds no role, and issue claims, the route roster and every other reader keep `Session` and `Sessions`, which never see `stopped`.
+A message whose sends ask for a session that is running now (`connected_only`) is the one exception:
+the listener refuses its stopped target with `409` instead of storing for it, and the attempt records that refusal as its failure, `the session is stopped`.
+A model or thinking switch the session would run as its own turn asks it, whatever its request says:
+a person's own Send or Aside on no issue, no broadcast's copy, written by the person and not by an agent acting for them (an author with no `act`), whose whole body, trimmed, is one `/model <value>` or `/effort <value>` line, its value holding no whitespace (`isSessionSwitch`, `api/messages.go`).
+That is the one shape a session runs as its own turn (`isUserTurnCandidate`, `packages/pi-shared/src/accept-user-turn.ts`), and such a line stored for a session that is not running would change that session's model at an unknown later time.
+Every other message reaches the session as a card and changes no model, so it is queued for a stopped session whatever its body says:
+an issue message, a mention, a broadcast copy, a BTW, a session's message and a message an agent wrote for its person (which the accept refuses as `ACCEPT_WRITTEN_BY_AGENT`) included.
+That rule decides a switch, not the request, because a tab loaded before the field existed sends the switch without it;
+a send to a session (`POST /api/v1/agents/{session_id}/messages`) may still set `connected_only` itself, as Dispatch's live view's switch does, and any other send that sets it is refused the same way, while an issue message takes no such field.
+The request's flag is the message's, not one send's:
+attempt 1 records it (`message_deliveries.connected_only`, written by `createStoredMessage`) and every later attempt of that message is opened with the first attempt's (`insertMessageDeliveryAttempt`), so the delivery sweep's resume, a repeat under the request's key, and a person's Retry or mode change from the agent card all ask the listener for a running session and are refused again.
+No row records the switch rule: every send judges it from the message and the mode that attempt is sent in (`deliverMessageResuming`).
+So a switch's Retry, Use Aside instead or resume is refused for a stopped session, a switch an earlier release stored with no flag included, and its Use BTW instead is queued unless its request set `connected_only`.
 
 **A send that meets a listener take-over waits it out under the attempt it holds.**
 While the active listener pod is replaced its successor refuses connections, answers 503 (its starting gate's `{"error":"service starting"}`), or does not hold the session yet for a few seconds (INFRA-557's take-over target is under 10).
@@ -2515,8 +2542,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The Go Dispatch server maintains its emitted event names and wire payloads separately; `bun run gen:go` generates Envoy envelope validation only.
 
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
-  alone it pages `contracts.DefaultIssuePageLimit`, 50):
-  `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
+  alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
@@ -2560,16 +2586,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   each direct child carries `subtree_done` / `subtree_total` (the child itself included, every status;
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
-- Every issue has a nullable `assignee`:
-  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
+- Every issue has a nullable `assignee`: the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
-  Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
-  a human actor's email; a personal token's `Owner`;
+  Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of: a human actor's email; a personal token's `Owner`;
   the parent's assignee when it names someone;
   the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
   the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
@@ -3488,6 +3512,44 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   adding it keeps a paused session's grace at least `InterestReapGrace` after its last heartbeat.
   Release order follows from it: no build that skips unchanged interest writes may run while any listener on the shared `envoy_interests` bucket still reaps at 10 minutes, and this build is one that skips them (`Registry.UpsertWithin`).
 
+- The known-session store (`envoy_known_sessions`, `internal/session/known.go`) holds one record per session that registered through any listener within `session.KnownSessionRetention` (30 days), keyed by session id:
+  its title, its capabilities, the topics its registration stored, and its last seen time (`session.KnownSession`).
+  A record says the session was known in the last 30 days, never that it is registered now.
+  It outlives both stores that answer for a running session, the session entry (`envoy_sessions`) and the interest row (`envoy_interests`), so a send to a stopped session is stored rather than refused and a publish counts that session among its recipients.
+  The code that needs a running session or a role holder therefore never reads it:
+  role resolution (`liveSessionEntry` in `cmd/listener/role_holder.go`) and the reapers each ask the stores whose records end when the session is gone.
+  Its readers are `/v1/messages/send` for a target with no entry within the gone horizon, `/v1/messages/publish` for its recipient counts, and `/v1/registry/<session_id>` with `stopped` in its `include=` list.
+  Each reads memory alone (`session.KnownSessions.Get` and `MatchEach`, over a `kvwatch` copy with a subject index of the records' topics), so no read of the store makes a JetStream call.
+  A record is written at a registration once its consumer call landed, at every change of a session's interests (`recordFollowedTopics`, which the unsubscribe route and the admin interests route each call), and at a `DELETE /v1/sessions/<session_id>` that removed an entry this listener's cache held, which is a clean stop.
+  The interest change writes the record whatever the session's delivery mode: the record says which topics a session follows, and the consumer's filter says which of those its consumer carries.
+  A write of content equal to the stored record is skipped while that record is younger than `session.KnownSessionRefreshAge` (10 minutes), so a session's 90-second heartbeat costs one write per refresh age however many listeners serve the session;
+  the comparison reads this listener's own copy of the record (`cached`, the `kvwatch` copy its watcher fills and its own writes write through), never the bucket, which is where `store.Registry.UpsertWithin` reads an interest row from;
+  so a record another listener wrote is compared as this listener's watcher last delivered it, the throttle holds across every listener once each one's watcher has delivered the others' writes, and a write made before that compares an older copy and costs at most one write of a record the bucket already holds.
+  A clean stop is written whatever the throttle would say (`session.KnownSessions.TouchWithin`):
+  a running session rewrites its record at least once per refresh age, so an unchanged-content write at its stop would be skipped and leave `last_seen` up to a refresh age before the stop, which a send to the stopped session answers and both tools print.
+  A failed write is a WARN and nothing else: the route answers whatever the write did.
+  The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, to the host user a host's sessions share and to Dispatch (`packages/envoy/infra/core/permissions.go`, and `packages/envoy/infra/README.md` for what that widens).
+
+- A listener whose NATS user may not open that bucket, a listener on any hub whose grant does not carry it, logs one WARN naming the bucket and runs without it:
+  every read answers as an empty store does and every write does nothing, so a publish answers no counts, and a send to a session with no entry answers `404`, as the registry route does.
+  Its start makes one open attempt before `/v1` opens, bounded at `knownBucketOpenWait` (2 seconds) rather than the 10-second JetStream `MaxWait` the other stores take, because the server drops a denied JetStream request rather than refusing it, so a denied attempt costs its whole wait.
+  A failed attempt is retried in the background, first after a second and doubling to a five-minute cap, and at once after each NATS reconnect, so a grant applied after the listener started is taken without a restart.
+  That one WARN is the store's own line, not the whole log a missing grant leaves:
+  the server refuses each attempt's publish to `$JS.API.STREAM.INFO.KV_envoy_known_sessions`, which the connection reports as one `envoy nats async error` at ERROR per attempt (`options`' async error callback, `internal/bus/connect.go`), so a denied listener writes that line on every attempt, about 12 an hour once the backoff reaches its cap.
+  An attempt that opens the bucket logs one INFO line, and only once the watcher's first read of the bucket has delivered every record, because until that read the store answers for no session the bucket knows (`session.KnownSessions.Opened`).
+  The listener's start waits for the same read (`WaitForCacheReady`, at most 30 seconds, after which it logs a WARN and goes on), and waits for nothing on a bucket it could not open.
+  Once the bucket is open its handle takes the ordinary 10-second wait, so only the attempt a start waits on is shortened.
+  The store is kept out of `listenerCaches`, so the self-health monitor, which restarts a listener whose cache does not answer, never restarts a listener on a hub without the grant.
+
+- The store answers by the rule every cache of the listener answers by (`kvwatch.Watcher.Servable`):
+  once the watcher's first read of the bucket has delivered every record, and for as long as the copy follows the bucket or stopped following it no longer ago than its stale bound, two minutes.
+  A disconnect starts that bound (`session.KnownSessions.Disconnected`, on the bus's disconnect hook), and a move of the watcher to the recovered connection ends it (`session.KnownSessions.Rewatch`, on a reconnect hook).
+  Past the bound the store answers no record and no match, so a publish leaves its counts out and a send to a session with no entry answers `404`, as on a listener without the bucket.
+  A move that fails is a WARN, and the hook answers the bus nil over it:
+  a hook's error makes the bus run every reconnect hook again, turns `/healthz` degraded after its repair grace and writes the ERROR an operator is paged by, all over a store no delivery reads.
+  The store retries the move itself instead, on the backoff of its open, until a move succeeds or the store stops, and a later reconnect's own move that succeeds ends the retry too.
+  The move that succeeds after a failed one logs one INFO line saying the cache is back, whichever caller made it, and one repair runs at a time.
+
 - `store.Open` snapshots the revision of every stored claim (`roleRevisions`, `internal/store/roles.go`) so a restored claim keeps its grace only while the bucket still holds the revision the restart read, and a claim the hand-back marked keeps none of that grace whatever its revision.
   It takes that snapshot from one watch over the bucket's existing keys, as the interest, session and CI caches read theirs (`internal/kvwatch`), so listener readiness costs one pass over the bucket rather than a round trip per claim (LEGION-360).
   A scan that does not reach the end of the bucket fails the start rather than restoring part of it:
@@ -4222,7 +4284,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A stream that still carries a role-lane subject it leaves to a start, which moves the role lanes off, so a stale read never puts one back;
   while such a stream needs anything, the keeper sends nothing and logs `envoy nats keeper could not restore the stream`.
   It also raises the buckets its program opens (`bus.WithKeptBuckets`:
-  the listener's interests, roles, sessions and CI state buckets, Dispatch's webhook redelivery bucket) back to `ENVOY_NATS_REPLICAS`, logging `envoy nats keeper raised a bucket` with `replicas="1 -> 3"`.
+  the listener's `bus.ListenerBuckets()`, which are `envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state` and `envoy_dpop_proofs`, and Dispatch's `envoy_webhook_redelivery`) back to `ENVOY_NATS_REPLICAS`, logging `envoy nats keeper raised a bucket` with `replicas="1 -> 3"`.
   A failed pass logs `envoy nats keeper could not restore the stream` or `envoy nats keeper could not raise a bucket` and the next period tries again;
   it never stops the program, and a pass the program's own shutdown interrupts logs nothing.
   So with mixed settings during a rollout the stream can sit below the setting for up to one period after the last start;
@@ -4273,21 +4335,50 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - `/v1/messages/send` (POST)
 
-  Sends to a live `target_session`.
+  Sends to a `target_session` Envoy knows, and says what that session was when the message was stored.
   The target is read from the session store itself, not from this listener's cache of it:
   the cache answers a hit, and a miss is read through to the `envoy_sessions` bucket within `sendSessionReadTimeout` (1 s, `liveSessionEntry`), so only the store's own word that the key is gone
   — `nats.ErrKeyNotFound`, which `Refresh` also answers for a session id no session can register under
-  — is the `404 {"error":"no live session <id>"}` a sender routes around the pane on, while a read that did not answer is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` that asks the sender to try the same route again.
-  That read and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
+  — sends this route to the known-session store, while a read that did not answer is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` that asks the sender to try the same route again.
+  The `404 {"error":"no live session <id>"}` a sender routes around the pane on is answered only when neither store knows the id.
+  The target read, the sender stamp, the connection probe and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
   The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record (`senderStamp`), whose cache miss is read through to the `envoy_interests` bucket within `senderStampReadTimeout` (1 s) of the same budget:
   the stamp is only enrichment, so a read that does not answer leaves it the session id and the title this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
   before it, both named the listener the session first registered through).
+  The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
   The publish row's 403 for a denied publish reaches this route too:
   it publishes `contracts.AgentSubject(target)`, which the stream's `notifications.agent.>` captures, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
-  the response is the envelope plus `recipient` with the full target session ID, and `duplicate: true` when JetStream already held this message.
+  the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
+
+- A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
+  the entry's last registration, or for a target with no entry its known-session record's last write.
+  `state` is a field of its own and not a fourth value of `recipient_state`, because every released plugin reads `recipient_state` as a closed list of `live`, `unresponsive` and `gone` and would fail to read an answer carrying a fourth;
+  an older client drops `state`, and `stopped` is never a `session.State`.
+  There are five answers.
+  An entry within the gone horizon whose probe got a reply or a second of silence, or whose entry records no consumer delivery and so is not probed, is `200` and `connected`, with `recipient_state` `live` or `unresponsive` by the entry's age.
+  An entry within the gone horizon whose probe met NATS no-responders is `200` and `stopped`, with `recipient_state` by the entry's age: the probe wins over age.
+  No entry, or one past the gone horizon, with a known-session record is `200` and `stopped` with `recipient_state: gone`, its delivery mode judged by the record's capabilities (`stoppedDeliveryModeVerdict`, which accepts a record that carries none).
+  Either `stopped` answer stored the message, and the stream keeps it 72 hours, so a session that runs again under the same id gets it from its own consumer.
+  A target neither store knows is the `404` above.
+  A stopped target whose request set `connected_only` is `409 {"error":"the session is stopped"}` with nothing stored, recorded `outcome=session_stopped`;
+  `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a model or thinking switch the session would run as its own turn (a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model` or `/effort` line: `isSessionSwitch`) and on every send of a message whose request to `POST /api/v1/agents/{session_id}/messages` set it, and absent it changes nothing.
+  A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none.
+
+- The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).
+  It is sent only to a target whose entry records consumer delivery, since both plugins subscribe the relay subject before they register.
+  It never carries a relay frame header, so it cannot decode as a frame and move the session's resume point, and a plugin answers it `done` before it decodes anything (`RelayHeader.probe` in `@legion/envoy-client`), as does each stand-in for a session in the tests, the load test and the end-to-end scripts.
+  Any other probe error, a publish this listener's own grant denies (`bus.ErrPublishDenied`) or a connection that is reconnecting, counts as `connected` and is logged at WARN:
+  it says something about this listener and nothing about the session, and a listener that cannot ask must not call every session stopped.
+  The probe needs no grant of its own: the listener publishes `notifications.>` and subscribes `_INBOX.>`, and a session subscribes its relay subject and publishes `_INBOX.>` (`packages/envoy/infra/README.md`, "Permission sets").
+
+- `connected` promises a live plugin of that session id and never a delivery:
+  the listener reads whether anything subscribes the relay subject, not which process answered, and whether the session reads the message is its consumer's business, not this answer's.
+  So these read `connected` for a session that may not be running, and none of them carries data, since the probe has no body:
+  a subscriber that holds the subject and does not answer within the second (an operator's `natstail` on `notifications.>`, say, which passes the probe over unanswered and uncounted, since it is no session), a predecessor process that still holds the session id's relay subscription, an entry an older listener wrote without consumer delivery, a probe that failed as above, and, until dispatch://INFRA-840 gives each session a NATS user of its own, any session on a host's shared user that subscribes another session's relay subject.
+  A plugin older than the probe reads it as a frame that does not decode, answers it `done` and logs one line for each probe.
 
 - A `source: "dispatch"` send publishes under a MsgId, and so does a send whose key was minted once for it (the listener's own, or around the shared transport's UUID idempotency key);
   only those can ever answer `duplicate`: a send that declares `github`, `slack` or `ghostwispr` carries a `SourceEventID` minted for it, which its dedupe key does not name (`contracts.DedupeKeyNamesTheUpstreamEvent`);
@@ -4307,6 +4398,15 @@ Each item below names an endpoint and its method, then its contract, and an item
   A topic the stream captures goes through JetStream and is answered `200` with the envelope once the stream stored it;
   a session that was not connected then takes it from its own consumer when it returns ("Session consumers").
   Its sender stamp's read and its publish share the same 3.5 s `sendRequestBudget` from the request's own context that a send's read and publish do, and a publish the bus did not serve is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`.
+  A `200` for a topic the stream captures carries `recipients` and `recipients_connected` (`recipientCounts`, `cmd/listener/recipients.go`), counted just before the publish.
+  `recipients` counts every session other than the sender that the topic is for, each session once:
+  the known-session records whose topics match the topic, one per session that registered in the last 30 days, together with the interest rows that match it on any machine (`store.Registry.MatchAllMachines`), since a session that registered through an older listener has a row and no record.
+  `recipients_connected` counts how many of those the session registry holds a `live` entry for (`session.SessionRegistry.Lookup`, `session.StateOf`), so an unresponsive session is not among them, and it is the number a reader acts on:
+  against 30 days of records a team topic almost never counts zero.
+  Both are read from memory, so counting makes no JetStream request, and a count of zero is sent as the number it is rather than left out.
+  A role topic's answer carries neither, since it names its `holder` instead, and a refused topic carries neither;
+  nor does a listener whose known-session store does not answer (`session.KnownSessions.Opened`: its bucket not open, its first read not complete, or its copy past the stale bound), or whose interest copy cannot be served (`store.Registry.Servable`, by the same rule), which sends no number rather than one that means something narrower than its name.
+  A listener whose session registry copy cannot be served (`session.SessionRegistry.Servable`) sends `recipients` without `recipients_connected`, since only the second reads it.
   A `notifications.role.<role>` topic is not published on the role lane:
   the listener forwards it to the live holder's agent subject itself and waits for the stream's acknowledgement that it stored the forward, forwarding again until one is stored (`sendToRole`, `cmd/listener/confirmed.go`;
   the "Role messages use core NATS" rule under "Critical conventions" has the retry).
@@ -4604,6 +4704,11 @@ Each item below names an endpoint and its method, then its contract, and an item
   It refuses four ways: a 413 naming its size or a 400 naming the key for an id the session bucket would refuse as a KV key, `404 {"error":"no live session <id>"}` only when the bucket holds no key for it, `500 {"error":"envoy: the interest record of session <id> is unreadable: <reason>"}` with no `Retry-After` for an interest record this build cannot decode (`store.ErrMalformedInterest`), and `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` for a read that did not answer
   — the session's, its interest record's or the claims view's, all within a 3.5 s budget
   — never a session a caller may take for ended or one with no topics or roles.
+  With `stopped` in its `include=` list (`includes`), and only then, the route answers one more kind of session:
+  one it would otherwise answer `404` that the known-session store holds a record of is `200 {"session_id","state":"stopped","last_seen","title","capabilities","topics"}` (`stoppedSessionInfo`), read from memory, with no `port` and no `host`, not even empty ones, since a session that is not running has no address to be reached at.
+  A session whose entry the list accepts answers its ordinary body, whose `state` is its entry's, so both shapes of this one request carry `state`.
+  Without `stopped` in the list the route answers that session `404`, and `GET /v1/sessions` never lists a stopped session whatever it is asked.
+  Dispatch's delivery is the one reader that asks for it, so an issue claim's holder, a role resolution and the session list never see a stopped session.
 
 - `/v1/sessions/<session_id>` (DELETE)
 
@@ -4617,6 +4722,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   A value of `if_not_registered_after` that is not a positive whole number of milliseconds is a `400` naming the parameter, never a delete: a condition silently dropped would remove exactly what the caller asked to keep.
   Without either parameter the registration is removed whoever wrote it, and the answer carries no body at all, as this route always answered.
   A request presenting a broker access token removes only the registration of the session that token names, and is refused 403 for any other; the handoff above still works, since it deregisters its predecessor while it is still that session.
+  A DELETE that removed an entry this listener's session cache held also moves the session's known-session record to now, keeping its topics (`session.KnownSessions.TouchWithin`), since the session stopped cleanly and a publish on a topic it followed still counts it as a recipient.
+  A DELETE that removed nothing, or an entry this listener's cache did not hold, writes no record, and no outcome of the record write changes this answer.
   A write route (below the list).
 
 - `/v1/legion/agents/sessions/<session_id>` (GET, PUT)
@@ -4948,6 +5055,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **Relay over NATS:** the owner pulls the consumer and publishes each message, in stream order, as a core frame on `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`, which the stream does not store).
   The frame's data is the stored message's bytes, and its headers are `Envoy-Subject`, `Envoy-Stream-Seq`, `Envoy-Stream-Id`, `Envoy-Delivered`, `Envoy-Stored-At` and, on the first frame after a restart below the stream's first sequence, `Envoy-Gap: true`.
   Its reply subject is a token under the listener's one reply inbox.
+  The send route's connection probe is the one other message on this subject:
+  no body, the one header `Envoy-Probe: 1` and none of the frame's, on a reply inbox of its own, so it never decodes as a frame, never reaches the relay's reply handler and never moves the resume point, and the session answers it `done` before any decode (`/v1/messages/send`).
   The session answers each frame with one word:
   `received` once the frame decodes, before any host work;
   `progress` every 20 s while it holds the frame unwritten (`InProgress`);
