@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { CaseRow } from "./build-corpus";
+import type { CaseSeed } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
 import type { DispatchEvent } from "./dispatch-read";
 
@@ -28,10 +28,13 @@ import type { DispatchEvent } from "./dispatch-read";
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
  *
- * `readCorpus` (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, so every
- * command here skips them, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and `claim.ts`
- * registers that reference for this run's digest (`reserveAccessOf`). Once `claim.ts` records
- * that the reserve ended, no case is held.
+ * `build-corpus.ts` writes no reserved case to the `corpus.jsonl` it builds, only their count to
+ * its `snapshot.json`, so the file itself holds none for any reader to meet, and `readCorpus`
+ * (`corpus-io.ts`) refuses every file that holds one, an older build's or the claim run's
+ * included, so no command here reads them; each does so unless `APPROVAL_EVAL_RESERVE` is
+ * `read:<reference>` and `claim.ts` registers that reference for this run's digest
+ * (`reserveAccessOf`), the claim run's build among its commands. Once `claim.ts` records that the
+ * reserve ended, no case is held.
  */
 
 /** The cut: an ask that opened at or after it can be reserved by its tree. */
@@ -72,7 +75,7 @@ export function pickedRoot(rootKey: string): boolean {
  * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
  */
 export function reserveOf(
-  row: CaseRow,
+  row: CaseSeed,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";
