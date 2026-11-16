@@ -6254,10 +6254,14 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named` or `person`, which says what `project` means.
+- `project_scope` — `named` or `person`, which says what `projects` means.
 
-- `project` — the one project key a `named` token may write.
-  A `person` token carries none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
+  A token whose trade named none, and a token that names a service and no person, carry none.
+
+- `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
+  No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
+  Every other token carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
@@ -6268,9 +6272,24 @@ A pod's token needs an entry for its service account, which gives the project an
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A machine login's token needs no entry at all: the person is the login's approver, the scope is `person`, and the token names no project (`Set.Machine`).
+A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
+A machine login's token needs no entry at all: the person is the login's approver and the scope is `person` (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
+
+A `person` token names the projects its trade asks for (`projects`, keys separated by spaces, at most 16, each a project key; `AGENT_SECRETS_PROJECTS` is where a session's client reads them from).
+Before it mints, the broker asks Dispatch, with its own projected ServiceAccount token, whether the token's person may see each one (`BROKER_PROJECT_ACCESS_URL`, `BROKER_PROJECT_ACCESS_TOKEN_FILE`, `packages/envoy/internal/broker/projectaccess`), and refuses `invalid_request` naming the first it may not see, in the same words whether Dispatch holds that project or not.
+A trade that names no project is refused only for a person Dispatch calls a restricted member, who sees only the projects that name them;
+a person's sign-in is taken as a full member's and asks no member kind, since the broker checked its Workspace domain itself.
+An operator's entry is held to Dispatch the same way: a `named` token is refused when the entry's person may not see the entry's project.
+Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
+A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
+A broker whose Dispatch cannot be asked mints a token that names no project as before, logging one line naming each, and refuses every trade that names a project `temporarily_unavailable` for the client to ask again, an entry's token naming its project included.
+A Dispatch that answers 401 or 403 to the broker's own account token does not list the broker's account as one that may ask, or does not accept that token (one minted for another audience, say); a broker that cannot read that token from its file, and a Dispatch answering a member kind the broker does not know, are refused the same way: every trade that asks is refused `server_error`, saying so, and nothing is minted unchecked.
+A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
+A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
+The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
+
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
 A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
@@ -6289,8 +6308,8 @@ For the settings themselves, read the broker's generated configuration reference
 Nothing Legion runs presents such a token at this release.
 A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
 An operator-launched controller presents the token its own file names.
-Dispatch accepts no broker token yet.
-`dispatch://INFRA-264` is where Dispatch accepts one and reads the session, the person and the project from it.
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person the token names, and holds a `named` token's writes to its one project (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `person` token's list of projects limits no Dispatch write at this release.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares

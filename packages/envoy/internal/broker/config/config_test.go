@@ -229,10 +229,10 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 }
 
 // TestLoadRefusesDispatchVariables pins that the removed Dispatch variables fail loudly rather
-// than being silently ignored: the broker asks and issues nothing in Dispatch, and the one
-// thing it does read there, whether an issue is open, is the judge's read under
-// BROKER_JUDGE_DISPATCH_URL, so a stale deployment env still setting one of the five must
-// refuse to start, naming the variable.
+// than being silently ignored: the broker asks and issues nothing in Dispatch, and the two things
+// it does read there, whether an issue is open and whether a person may see a project, are read
+// under settings of their own (BROKER_JUDGE_DISPATCH_URL, BROKER_PROJECT_ACCESS_URL), so a stale
+// deployment env still setting one of the five must refuse to start, naming the variable.
 func TestLoadRefusesDispatchVariables(t *testing.T) {
 	e := validEnv()
 	e["BROKER_DISPATCH_URL"] = "https://dispatch.internal.example"
@@ -1632,9 +1632,10 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
-// itself carry "=", and refusals naming the entry for one that is not of that form, has a blank
-// field, names a namespace's default account or lists an account twice. It needs the cluster
-// issuer and the exchange audience, whose tokens its pods present.
+// itself carry "=", an empty project (the shared public-session account's entry, whose named
+// tokens name no project), and refusals naming the entry for one that is not of that form, has a
+// blank account or person, names a namespace's default account or lists an account twice. It
+// needs the cluster issuer and the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -1650,7 +1651,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
-		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 "
+		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
+		"system:serviceaccount:example-ns:example-public==ada@example.com"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -1658,13 +1660,14 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	want := []exchange.AccountEntry{
 		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
 		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
+		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
 	}
 	if !slices.Equal(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
 	}
 	for _, bad := range []string{
 		"system:serviceaccount:example-ns:example-worker", "system:serviceaccount:example-ns:example-worker=EXAMPLE",
-		"system:serviceaccount:example-ns:example-worker==ada@example.com", "=EXAMPLE=ada@example.com",
+		"system:serviceaccount:example-ns:example-worker=EXAMPLE=", "=EXAMPLE=ada@example.com",
 		"example-worker=EXAMPLE=ada@example.com", "system:serviceaccount:example-ns:default=EXAMPLE=ada@example.com",
 	} {
 		e := withExchange()
@@ -2086,6 +2089,53 @@ func TestTheJudgesURLsAreHeldToTheirForm(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "absolute http(s) URL") {
 				t.Errorf("Load(%s=%q) = %v; want a refusal naming the variable", setting, bad, err)
 			}
+		}
+	}
+}
+
+// TestProjectAccessSettingsComeTogether pins BROKER_PROJECT_ACCESS_URL and
+// BROKER_PROJECT_ACCESS_TOKEN_FILE: neither set is a broker that asks Dispatch nothing, which is
+// every deployment with no private project; both set are read as given, the URL without the
+// slashes it ends in; one alone refuses the start naming the other, as the judge's settings do;
+// and a URL that is no absolute http(s) URL refuses the start naming the setting.
+func TestProjectAccessSettingsComeTogether(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "" || cfg.ProjectAccessTokenFile != "" {
+		t.Fatalf("with neither set the broker reads URL %q and token file %q; want both empty", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	e := validEnv()
+	e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766//"
+	e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "http://dispatch.internal.example:8766" || cfg.ProjectAccessTokenFile != "/var/run/secrets/dispatch-access/token" {
+		t.Fatalf("with both set the broker reads URL %q and token file %q; want the URL without its trailing slashes and the file as given", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	for set, missing := range map[string]string{
+		"BROKER_PROJECT_ACCESS_URL":        "BROKER_PROJECT_ACCESS_TOKEN_FILE",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE": "BROKER_PROJECT_ACCESS_URL",
+	} {
+		alone := validEnv()
+		alone[set] = e[set]
+		_, err := Load(env(alone))
+		if err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("Load(%s alone) = %v; want a refusal naming %s", set, err, missing)
+		}
+	}
+
+	for _, bad := range []string{"dispatch.internal.example", "//dispatch.internal.example", "ftp://dispatch.internal.example", "http://", "http://%zz"} {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = bad
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
+			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
 	}
 }
