@@ -78,9 +78,11 @@ A Google caller presents its machine's own Google identity token for `BROKER_GOO
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
 a machine presents what its metadata server already hands it and mints no second token — verified
 against `BROKER_GOOGLE_OIDC_ISSUER`, and is looked up by the token's `email`, so such an entry
-needs that audience and no cluster at all. A project's default Google accounts and Google-managed
-service agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between
-the broker and its callers. A token that lives longer than an hour from its issue is refused, and
+needs that audience and no cluster or VM service. Leave `BROKER_VM_SERVICES` unset when only API
+callers use the Google audience: listing an API caller does not give it a machine login, but listing
+its account as a VM service does. A project's default Google accounts and Google-managed service
+agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between the
+broker and its callers. A token that lives longer than an hour from its issue is refused, and
 an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. Through those routes
 Dispatch lists what waits on a person and relays a person's machine-login decisions, their
 machine-login revokes and their sign-in revokes; it decides no secret request
@@ -275,17 +277,22 @@ nothing refreshes it.
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
 token exchange for a Dispatch access token and the machine login that trade mints. It holds no
-stored credential and no person approves it. Five settings describe its fleet, and the broker
-refuses to start with only some of them:
+stored credential and no person approves it. Set the Google audience and list each exchanging
+account as a VM service. The remaining fleet settings are optional, subject to these checks:
 
 - `BROKER_GOOGLE_OIDC_AUDIENCE`: the audience the machines ask their metadata server for. The
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a
   stand-in for a dev stack; the broker reads its keys at startup only when the audience is set,
   and then logs one `google machine identity` line naming the issuer, the audience and the machine
-  services. Unset, the broker reads and logs nothing about Google and takes no such token.
+  services. Unset, the broker reads and logs nothing about Google and takes no such token. Set, it
+  needs a Google caller, or the broker refuses to start: a `google:` entry in
+  `BROKER_API_ACCOUNTS` or a VM service in `BROKER_VM_SERVICES`.
 - `BROKER_VM_SERVICES`: whitespace-separated `<service>=<service account email>` entries. Use a
   dedicated user-managed account for each fleet: the broker refuses a project's default Compute
-  Engine or App Engine account, which every workload in the project runs as by default.
+  Engine or App Engine account, which every workload in the project runs as by default. Without a
+  listed VM service, no Google identity token can be exchanged for a machine login. An API caller
+  alone needs no VM service, but `BROKER_SIGNIN_DEVICE_AUDIENCE` does: the person's device sign-in
+  presents a machine's identity token as its actor.
 - `BROKER_VM_PROJECTS` and `BROKER_VM_INSTANCES`: `<service account email>=<project id>` and
   `<service account email>=<instance-name glob>`, in Go's `path.Match` syntax. They pin a fleet to
   one Compute Engine project and the instance names its machines have. The two go together: set
@@ -345,8 +352,9 @@ the `aud` of the ID tokens it mints for it; set it to the same client id the mac
 needs, is the Workspace domain the person's `hd` claim must name, so a person outside it signs in
 nowhere. The issuer of both the person's token and the machine's is `BROKER_GOOGLE_OIDC_ISSUER`,
 `https://accounts.google.com` unless a dev stack names a stand-in, and the audience setting needs
-`BROKER_GOOGLE_OIDC_AUDIENCE`, whose machines are the boxes a person may sign in on. Unset, the
-broker accepts no person's sign-in and refuses either token type by name.
+`BROKER_GOOGLE_OIDC_AUDIENCE` and a VM service in `BROKER_VM_SERVICES`, whose machines are the
+boxes a person may sign in on. Unset, the broker accepts no person's sign-in and refuses either
+token type by name.
 
 Each machine holds a launcher credential of its own, keyed by the machine and the key its proof
 presented: `<account>@<project>/<zone>/<instance id>#<key thumbprint>` for a token minted on a
