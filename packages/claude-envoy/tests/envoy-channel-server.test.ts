@@ -492,8 +492,33 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   const envoy = codexPlugin.mcpServers.envoy
   expect(envoy.cwd).toBe("./")
   expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
-  expect(envoy.env_vars).toContain("ENVOY_CONFIG_FILE")
-  expect(envoy.env_vars).toContain("XDG_CONFIG_HOME")
+  // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
+  // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
+  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  for (const name of [
+    "AGENTBOX_HOST",
+    "AGENT_SECRETS_MACHINE_AUDIENCE",
+    "AGENT_SECRETS_MACHINE_IDENTITY",
+    "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+    "AGENT_SECRETS_URL",
+    "DISPATCH_PUBLIC_URL",
+    "DISPATCH_STATE_DIR",
+    "DISPATCH_TOKEN",
+    "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_FILE",
+    "DISPATCH_URL",
+    "ENVOY_CONFIG_FILE",
+    "ENVOY_MACHINE_ID",
+    "ENVOY_NATS_URL",
+    "ENVOY_TOKEN",
+    "ENVOY_TOKEN_FILE",
+    "ENVOY_URL",
+    "NATS_NKEY_SEED",
+    "NATS_NKEY_SEED_FILE",
+    "XDG_CONFIG_HOME",
+  ]) {
+    expect(envoy.env_vars).toContain(name)
+  }
   expect(envoy.tools).toEqual({ dispatch: { approval_mode: "approve" } })
   // Codex's validator refuses a manifest `hooks` field; with none, Codex reads hooks/hooks.json.
   expect(codexPlugin).not.toHaveProperty("hooks")
