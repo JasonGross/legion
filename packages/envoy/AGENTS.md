@@ -4088,7 +4088,7 @@ A read-only broker token carries no project either, but none of the three checks
   the failure starts one, and when one is already ending the failure finds it running and starts none, so a recovery looks again once it has cleared its flag.
   A run that fails with the client still running is reported by how long the hooks have been uncovered and not by the one failure (`bus.Client.reportHookFailure`):
   under `bus.RepairGrace` (a minute) it is a WARN, `envoy nats reconnect hook failed; it is retried`, and at or past it an ERROR, `envoy nats reconnect hooks have not succeeded`, each with `name`, `error` and `stall_ms`;
-  a run that fails once the client has stopped is the stop and not a failure, and the path the run was on reports it: the `stopped` guard in `bus.Client.onReconnect` logs the INFO `envoy nats reconnect hooks cancelled` with the hook's error, and the guard after each attempt in `bus.Client.recoverUntilHealthy` logs the INFO `envoy nats recovery cancelled` with that attempt's joined error (`errors.Join` of the connect-or-restore error and the hook error).
+  a run that fails once the client has stopped is the stop and not a failure, and the path the run was on reports it: the `stopped` guard in `bus.Client.afterReconnect` logs the INFO `envoy nats reconnect hooks cancelled` with the hook's error, and the guard after each attempt in `bus.Client.recoverUntilHealthy` logs the INFO `envoy nats recovery cancelled` with that attempt's joined error (`errors.Join` of the connect-or-restore error and the hook error).
   A recovery reports its own failed run the same way rather than folding it into `envoy nats recovery resubscribe failed`.
   Re-subscribing holds no lock across a bind's request, so a reconnect that lands while a bind is in flight, such as the listener's bind attempt, whose lookup the reconnect can lose for JetStream to wait out for 10 s, restores and runs the hooks without waiting for it:
   a registration has one bind at a time, so the restore leaves that registration to its bind, and the recovery the reconnect starts binds it should that bind fail.
@@ -4100,6 +4100,18 @@ A read-only broker token carries no project either, but none of the three checks
   The first start runs in the background.
   When it fails with no watcher current, it records the failure and releases the cache's readiness;
   when a Rewatch's watcher is current, it does neither, and that watcher releases readiness once it has delivered every existing key.
+
+- No run of the reconnect hooks is on nats.go's one callback goroutine: the reconnect callback (`bus.Client.onReconnect`) reports the reconnect, marks the hooks due and hands the re-subscribe and the run to a goroutine of its own (`afterReconnect`).
+  A hook's request on a connection that drops again waits out its whole bound (10 s for most), and every callback queued behind it, the next disconnect's, its hooks and Dispatch's outbox wake among them, would wait too (`TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce`).
+
+- Each run's hooks get the run's context (`bus.Client.whileConnected`), which ends when the run's connection leaves CONNECTED or the client stops, and wait on nothing past it, so a run never waits out a request on a connection that is gone and the next reconnect's run is not held behind it (`TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest`).
+  A hook is `func(ctx context.Context, conn *nats.Conn) error`.
+  The legacy stream calls take `nats.Context` per call (`requestsUnder`); the requests nats.go gives no context are waited for only until ctx ends: the legacy `js.KeyValue` lookup (`bus.OpenKeyValue`, through `Bounded`) and the previous watcher's consumer delete (`kvwatch.Watcher.watch`), which then goes on by itself.
+  The known-session hook's wait for the lock its background retry holds through an attempt ends with ctx too (`session.KnownSessions.repairMu` is a `ctxlock.Mutex`, taken with `LockContext`).
+  A run that context ended, or whose connection is not CONNECTED when its hooks return, is superseded, not failed (`errRunSuperseded`): it keeps no `lastHookErr`, logs INFO rather than the WARN, and covers no event, so every hook runs again on the next connection and no half-move survives.
+  `bus.RunEnded(ctx, conn)` is that one rule, and a hook that decides for itself whether a failure is a failure reads it too (the known-session hook's WARN and its store's retry), so the two never disagree.
+  Once the hooks have been uncovered for `RepairGrace`, a superseded run writes the stall's ERROR all the same (`reportSuperseded`), so a link that drops during every run still pages.
+  The context bounds only a KV watch's create request, never the watcher's life, and the re-subscribe's binds are never under it: a cancelled bind would race the server's release of a push-bound durable.
 
 - A rewatch opens the bucket on the connection it is given, so a store bound to a replaced connection moves to the new one.
   Every watcher a watch installs reads the whole bucket again, and nothing empties the cache first (`kvwatch.Cache`):
@@ -4553,7 +4565,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   before it, both named the listener the session first registered through).
   The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
   The publish row's 403 for a denied publish reaches this route too:
-  it publishes `contracts.AgentSubject(target)`, which the stream's `notifications.agent.>` captures, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
+  it publishes `contracts.LegacyAgentSubject(target)`, the target's agent subject in the old form, with no project (`contracts.AgentSubject` builds the new form, which no producer writes yet), and the stream's `notifications.agent.>` captures it, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
@@ -4693,10 +4705,15 @@ Each item below names an endpoint and its method, then its contract, and an item
   and a claim record no read can decode is, as on the publish route, `500 {"error":"envoy: the claim record of role <role> is unreadable: <reason>"}` with no `Retry-After`.
   Every holder answer, the 200 and the 404 alike, carries `claim_revision`: the `envoy_roles` revision of the role's claim record as this lookup leaves it, which `/v1/roles/set` takes back as `if_claim_revision` (the 503s and the unreadable-record 500 above carry an error alone, as they always did).
   It is the revision the live holder's claim was read at, the revision of a lapsed claim this lookup kept (a restored claim still inside its restart grace), and `0` for a role no record claims — an unclaimed one, and a lapsed holder whose claim this lookup released.
+  The role is named in either form, `INFRA.<role>` or `<role>` alone, and a claim is keyed by the bare name whichever form claimed it, so this route, a publish to a role's lane and the lane's own delivery each read the name through `contracts.CanonicalRole` before they resolve the holder:
+  a send to `notifications.role.<P>.<role>` reaches the holder that claimed `<role>`.
+
+- A role claim's key is the bare role name in this slice, the claim of the project the name gives (`contracts.RoleProject`), so `/v1/roles/set` answers `400`, naming both projects, for a new form under any other project (`PRIV.legion-zz-controller`, `PRIV.lead-reviewer`), as for every dotted role before; t-c-8 lifts this for a free-form role once a claim keys on its project.
 
 - `/v1/roles/set` (POST)
 
   Claims a role for a live session; the claim alone makes it the holder, and the route also adds the role's topic to its interest record.
+  The role is read in either form, `INFRA.<role>` or the old `<role>` alone, which claims the same role and is answered with a `warnings` entry naming the new form and counted (`store.Registry.ClaimedRole`).
   Last-claim-wins by default.
   A claim states the process making it, `client_instance_id`, the same id that process's registrations carry, and the claim record names it as the process holding the role.
   With `"soft": true` the claim lands only if the role is unheld, held by a session that is no longer live, held under the claimant's own session id on the terms below, or held by the declared `previous_session_id` (the id a fork/branch continues) in one of three cases:
@@ -4775,7 +4792,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   each session's inbox `notifications.agent.>`, the failed-delivery lane `notifications.envoy.exceptions.notifications.agent.>`, the Legion controller notice lane `notifications.legion.>`) that is not the session's own — another session's agent subject, any failed-delivery lane (its own included), the controller notice lane of a project whose controller role the session does not hold, or a wildcard overlapping one (`notifications.agent.*`, `notifications.envoy.>`, `notifications.>`, `notifications.*.<x>`;
   `bus.ReachesPrivateStreamSubject`) — is not stored, since the stored topics drive the listener's fan-out and the filter of the session's own consumer, and such a topic would hand the session messages meant for another session or for another project's controller:
   the rest of the registration is stored, the answer stays 200, and `warnings` names each topic left out (`<topic> was not registered: …`).
-  Two literal subjects are a session's own: its `notifications.agent.<id>`, and `notifications.legion.<project>.controller` while the claim record of `legion-<project>-controller` names it as the holder (`bus.ControllerNoticeRole` pairs the lane with that token from the one project token the lane names, so neither is built twice;
+  Two literal subjects are a session's own: its agent subject, `notifications.agent.<id>` or its new form under a project, `_` or `*` (`notifications.agent.<PROJECT>.<id>`, "Session consumers"), and `notifications.legion.<project>.controller` while the claim record of `legion-<project>-controller` names it as the holder (`bus.ControllerNoticeRole` pairs the lane with that token from the one project token the lane names, so neither is built twice;
   `store.Registry.controllerLaneRoles` reads that claim record from the role bucket, never the registry's watched copy of the claims, which can lack a claim the store gives the session or name one the store has moved).
   Its holder registers that lane because a Legion controller receives those notices from its own consumer, the lane's core subscription having gone with the rest of the core receive path;
   a registration naming a lane, in its topics or in its row, is answered the bus-unavailable 503 when that claim read does not answer or fails, rather than stored without the lane, and one naming none reads no claim.
@@ -4784,6 +4801,13 @@ Each item below names an endpoint and its method, then its contract, and an item
   A row an earlier build stored with such a topic is cleaned at the session's next registration:
   the registry drops every such topic from the merged row, not only from the incoming topics (`store.Registry.Upsert`, which `/v1/roles/set` writes through too;
   `/v1/interests/unsubscribe` drops them from the row it rewrites as well), so `Match` stops fanning those messages out to the session after its next heartbeat, and so does the lane of a session that has since lost the controller role.
+
+- A topic stored in the old form of its name, an issue's key without its project, a role's or an agent's name without one, is stored as the caller wrote it and named in `warnings` with its new form (`<old> is the old form of <new>; register <new>`), and counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+  A role's lane is named with the claim that reaches it instead (`…; a role's lane delivers nothing to an interest: claim <project>.<role> through POST /v1/roles/set`), since an interest in a role's lane, in either form, delivers nothing.
+  The session's own agent subject in the old form, which the plugins add to every registration, is counted and not named, and only the caller's own topics are weighed, so the agent subject the route adds itself is never counted ("Session consumers").
+
+- A session's own client is the last reader of a delivered frame, and it takes both forms too (`packages/envoy-client/src/consumer-delivery.ts`): a frame whose subject names the project reaches a session that followed the form without it, and the other way round, and a message on the session's own inbox under any project is its own, while another session's is refused in either form.
+  A client that compared the spellings as they stand would answer such a frame `done` and move its resume point past it, losing the message with no notice.
 
 - The registration is also the holder's heartbeat for the role claims it holds:
   it stamps `renewed_at` on each claim this session holds that names this same `client_instance_id`, among the roles it weighs, and the first registration of that session id stating any instance adopts a claim that names no process (`store.Registry.RenewRoleClaims`), which is what `/v1/roles/set` and the role claim reaper weigh against the live window.
@@ -4853,6 +4877,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The row it rewrites also drops any stored topic reaching a private stream subject other than the session's own agent subject, as `/v1/interests/subscribe` says.
   A session whose entry records consumer delivery has its consumer's filter set to the topics left before the call answers (`sessionDelivery.refollow`);
   a failure there is logged, and the plugin drops a frame no followed topic matches.
+
+- An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
   a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends.
@@ -5044,6 +5070,29 @@ The one topic shape a session can follow that is not its own agent subject is a 
 A role lane stays on core NATS and is never a session's subscription:
 the listener forwards a role message to the holder's agent subject, which the stream captures, so the holder's own consumer delivers it (sjawhar/legion#753, 2026-08-26, took the role topics out of the stream).
 
+A message name the rename moves has two forms while every reader takes both (dispatch://INFRA-3862):
+an issue's events, `notifications.dispatch.issue.<KEY>.<type>` and `notifications.dispatch.issue.<PROJECT>.<KEY>.<type>`;
+one session's messages, `notifications.agent.<session>` and `notifications.agent.<PROJECT or _>.<session>`;
+a role's lane, `notifications.role.<role>` and `notifications.role.<PROJECT or _>.<role>` (`contracts.CanonicalTopic`, `contracts.LegacyTwin`, `contracts.TopicForms`).
+A session's consumer filters on every form of each topic it follows, and on its own agent subject in the old form and under any project (`notifications.agent.*.<session>`), so a message published in either form is delivered once, whichever form the session registered (`bus.SessionConsumers`, `sessionConsumerTarget`).
+The two forms a name is read in never overlap as filters, since they differ in their token count or in the token after the family's prefix.
+An issue's topic under a wildcard project (`notifications.dispatch.issue.*.<KEY>.>`) has no old form: its old form would overlap it, and the two would reduce to a filter over every project's issues (`bus.ReduceFilterSubjects`), so it stays one filter.
+Nor has an issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`), since no subject pattern names the issues of one project in the old form.
+**Envoy needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later.**
+From v2.10.26, and in 2.11 before v2.11.12 and 2.12 before v2.12.4 (a variant), nats-server can skip a literal filter beside a wildcard one when it reads a block by subject: measured on v2.10.29, a consumer on both forms of a session's agent subject was handed a new-form message and never the old-form one stored just before it, behind 24 other sessions' messages, with no error.
+No 2.10 release has the fix, so the floor refuses every 2.10, and a prerelease counts as before its release, so v2.11.12-RC.1 to RC.3 and v2.12.4-RC.1 and RC.2, which still have the bug, are refused too.
+So the listener refuses to start against such a server, naming its version and the fixed releases: its start opens its session consumers (`bus.ConnectSessionConsumers`), which ask `natsversion.ConnectedRefusal` of the version the connection reports, and `main` ends the process on the error (`TestTheListenerRefusesAServerThatSkipsAFilter`).
+`ConnectedRefusal` decides on a version it read alone (`natsversion.ConnectedVersion`): a connection that reports none, reconnecting or draining, is looked at again until it reports one, within `natsversion.VersionWait` (a minute) or the caller's nearer deadline, never read as a server of no version.
+The stream's consumer-cap decision reads the same way (`bus.connectedDefaultsAnUnsetCap`): an ensure across a reconnect once read `""` as an older server and left a stream with no cap at nats-server 2.15's default of 1000 (`TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion`).
+The constructor's ensure and each keeper pass wait for a reported version; the reconnect hook's ensure (`ensureStreamOn`) looks once, so a run of the hooks never waits out a second outage, and a connection that reports none is not CONNECTED, so its run is superseded and the next connection event's run makes the ensure again (`TestAFlapRunsTheSecondDisconnectHookAtOnce`).
+The Legion daemon refuses it by the same function before it opens its consumers (`intake.OpenConsumers`), under its boot attempt's 30 s `bootTimeout`, the bound its stream lookup after that has.
+The live proofs that start their own NATS server run the hub's image, which `scripts/e2e/lib/nats-image.sh` reads from `testnats.HubImage`.
+The interest record stores each topic as its caller wrote it, because the plugins read their record back and an unfamiliar form would be unsubscribed or misread;
+the registry's own readers take both forms instead (`store.Registry.Match` through its subject index, `store.Remove`, the role read of a record), and `POST /v1/interests/subscribe` names each topic the caller gave in the old form in its answer's `warnings` with its new form, counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+Each read of a stored row into a session's consumer filter (a repair, a restart, a fenced filter write: `storedRowFilter`) counts there too each topic the filter carries in the old form, so the counter keeps moving while any record holds one (`store.Registry.CountStoredLegacyTopics`);
+the session's own agent subject, which the subscribe route writes into every row itself, is not counted on that read.
+Nothing is refused for the old form yet.
+
 Where the rule is still weaker than the grant behind it:
 a session user may subscribe to every session's relay subject (`notifications.envoy.deliver.*`), so it can read another session's relay frames and acknowledge its messages away ("Trust" below);
 dispatch://INFRA-840 narrows that grant to the session's own.
@@ -5061,7 +5110,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited (-1: the server delivers a message until the session acks it, so one whose ack wait passed still awaits an ack and the ack floor stays below it, `bus.TestAMessageWhoseAckWaitPassedStillAwaitsAnAck`; the relay's nak ladder is the bound on how often one the session refuses comes back, "Relay over NATS" below), the stream's replica count, and an `InactiveThreshold` the listener derives at start.
   That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
   It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
-  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject (`bus.Client.NextStoredMessage`, one `$JS.API.STREAM.MSG.GET` by `next_by_subj`), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
+  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject in either form (`firstOwnMessage`: one `bus.Client.NextStoredMessage`, a `$JS.API.STREAM.MSG.GET` by `next_by_subj`, for each form), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
   A caller's start is the one the registration's `resume` asks for or the one a repair passes (`sessionDelivery.registeredTarget`), and the record rule lowers it: a caller's start above the resume record's floor plus one starts at that floor plus one instead, where the record names the stream's current `envoy_stream_id` ("The resume record each delete writes" below).
   A start a restart left pending reads no record, because it comes from the floor of the consumer that restart deleted, which is newer than any record.
   Every start, from each of these sources, that is past the sequence after the stream's last is then clamped to the stream's first sequence, so no consumer is created past the stream's end ("Past the stream's end" below).
