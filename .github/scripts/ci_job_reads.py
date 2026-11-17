@@ -2025,8 +2025,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2240 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2684 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
@@ -2193,7 +2193,10 @@ GATES = [
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
-        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,122"),
+        ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
+                                                     "file's path, lists that directory and reads the package.json and "
+                                                     "LICENSE.txt in it"),
+        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,139"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
