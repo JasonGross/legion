@@ -356,6 +356,22 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
+- **The session that holds each role of an issue**: `internal/dispatch/api/issue_role_holders.go`, `store/migrations/20261116163813_issue_role_holders.up.sql`
+
+  The Legion daemon publishes the live role sessions of an issue with `PUT /api/v1/issues/{key}/role-holders`, as session `legion-daemon:<project>`.
+  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name the daemon's session; the airlock closes that case.
+  The body is the issue's whole set, each pair naming both its role and its session, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  Each session is a session id (`text.IsSessionID`) of at most 256 bytes; any other body is `400 INVALID_ROLE_HOLDER` and stores nothing.
+  A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
+  The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
+  `heldRole` is the read that a later release of the results route makes in its own write transaction.
+  The daemon queues the publication in the transaction of each claim write that changes the session that holds a role (`internal/store`'s `putClaim`), so the change and its publication commit together, and an end whose claim write failed with an error that the daemon owes is published when the daemon makes that write again at the claim's next decision.
+  The session of an ended claim keeps its role until the daemon's next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
+  An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+  A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
+  Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
