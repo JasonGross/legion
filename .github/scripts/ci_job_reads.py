@@ -1677,7 +1677,7 @@ TEXT_CHECK_TESTS = {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
-        "TestOnlyWriteReviewWritesReviews",
+        "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }
