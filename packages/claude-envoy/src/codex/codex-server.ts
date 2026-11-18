@@ -48,8 +48,15 @@ import {
   codexSessionRecordFile,
   readCodexSessionRecord,
   recordOfProcess,
+  SHARED_APP_SERVER_NOTE,
+  sharedAppServer,
 } from "./codex-session-record"
-import { followTranscript, type TranscriptFollower, transcriptEvents } from "./codex-transcript"
+import {
+  followTranscript,
+  latestTurnCwd,
+  type TranscriptFollower,
+  transcriptEvents,
+} from "./codex-transcript"
 import { createCodexUserTurnRouter } from "./codex-user-turns"
 
 /**
@@ -189,13 +196,15 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const pluginRoot = process.cwd()
   const stateDirectory = stateDirectoryFor(pluginRoot)
   const codexPid = process.ppid
+  /** Codex's shared app server runs several sessions in this one process, which this plugin cannot
+   *  tell apart, so it serves none of them (`sharedAppServer`). */
+  const shared = sharedAppServer(codexPid)
   const recordFile = codexSessionRecordFile(stateDirectory, codexPid)
   const configFile = sessionConfigFile("codex", process.env)
   const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
 
   let record: CodexSessionRecord | undefined
-  let identity: SessionIdentity | undefined
   let runtime: ChannelToolRuntime | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
@@ -216,9 +225,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
     return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
   })
 
-  /** Runs the `dispatch` command in this process, as the session now bound, and answers what it
-   *  printed and its exit code. */
+  /** Runs the `dispatch` command in this process, as the session the codex process runs now and in
+   *  the directory its newest turn ran in, and answers what it printed and its exit code. */
   const runDispatchTool = async (raw: unknown): Promise<string> => {
+    if (shared) return `dispatch: ${SHARED_APP_SERVER_NOTE}\n[exit 2]`
     const parsed = DispatchToolArguments.safeParse(raw)
     if (!parsed.success)
       return `dispatch: the tool takes args (a list of strings) and an optional stdin\n[exit 2]`
@@ -226,7 +236,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
     // poll, so a call in the session's first turn can arrive first: it reads the record itself.
     const read = record ?? (await readCodexSessionRecord(recordFile))
     const current = read !== undefined && recordOfProcess(read, codexPid) ? read : undefined
-    const sessionId = identity?.id ?? current?.session_id
+    // The session the codex process runs now, as its record names it: after `/new` the record
+    // moves at once, while `identity` follows only when Envoy hands the session over.
+    const sessionId = current?.session_id
     if (sessionId === undefined || current === undefined) {
       return `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
     }
@@ -242,7 +254,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       join(pluginRoot, "dist", "dispatch.js"),
       parsed.data.args,
       parsed.data.stdin ?? "",
-      { cwd: current.cwd, env },
+      { cwd: (await latestTurnCwd(current.transcript_path)) ?? current.cwd, env },
     )
     return `${output}${output.endsWith("\n") || output === "" ? "" : "\n"}[exit ${code}]`
   }
@@ -275,6 +287,13 @@ export async function runCodexEnvoyServer(): Promise<void> {
   process.once("SIGHUP", stop)
   await server.connect(new StdioServerTransport())
 
+  if (shared) {
+    notReady = SHARED_APP_SERVER_NOTE
+    warn(SHARED_APP_SERVER_NOTE)
+    await stopped.promise
+    await server.close().catch(() => undefined)
+    return
+  }
   record = await waitForRecord(recordFile, codexPid, stopping.signal)
   if (record === undefined) {
     await stopped.promise
@@ -300,8 +319,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       if (ready) moveTo(next)
     })
   })
-  identity = new SessionIdentity(bound.session_id, bound.cwd)
-  const id = identity
+  const id = new SessionIdentity(bound.session_id, bound.cwd)
   const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,

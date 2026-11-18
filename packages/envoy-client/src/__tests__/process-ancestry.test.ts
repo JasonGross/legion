@@ -32,6 +32,20 @@ describe("nearestAncestorNamed", () => {
     expect(nearestAncestorNamed(["claude"], 40, reader)).toBe("claude");
   });
 
+  test("reads Claude Code's npm binary, claude.exe, as claude", () => {
+    // pid 3 (bash) <- 2 (claude.exe) <- 1 (codex)
+    const npm = new Map([
+      [3, { command: "bash", parent: 2 }],
+      [2, { command: "claude.exe", parent: 5 }],
+      [5, { command: "codex", parent: 1 }],
+    ]);
+    const npmReader = {
+      command: (pid: number) => npm.get(pid)?.command,
+      parent: (pid: number) => npm.get(pid)?.parent,
+    };
+    expect(nearestAncestorNamed(["codex", "claude"], 3, npmReader)).toBe("claude");
+  });
+
   test("answers undefined when no ancestor runs as any of them", () => {
     expect(nearestAncestorNamed(["omp"], 40, reader)).toBeUndefined();
     expect(nearestAncestorNamed(["codex"], 999, reader)).toBeUndefined();

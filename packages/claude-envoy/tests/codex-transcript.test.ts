@@ -5,6 +5,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
   type CodexTranscriptEvent,
   followTranscript,
+  latestTurnCwd,
   transcriptEvents,
 } from "../src/codex/codex-transcript"
 
@@ -129,5 +130,33 @@ describe("followTranscript", () => {
     appendFileSync(path, '{"b":2}\n')
     await Bun.sleep(80)
     expect(lines).toEqual(['{"a":1}'])
+  })
+})
+
+describe("latestTurnCwd", () => {
+  const root = temporaryDirectory("codex-turn-cwd")
+
+  test("names the directory of the newest turn, which /cd moves", async () => {
+    const file = join(root, "rollout.jsonl")
+    const turn = (cwd: string): string =>
+      JSON.stringify({ payload: { cwd, model: "m" }, timestamp: "t", type: "turn_context" })
+    writeFileSync(
+      file,
+      `${[
+        turn("/start"),
+        JSON.stringify({ payload: { type: "message" }, type: "response_item" }),
+        turn("/moved"),
+        JSON.stringify({ payload: { text: 'a "turn_context" in prose' }, type: "event_msg" }),
+      ].join("\n")}\n`,
+    )
+    expect(await latestTurnCwd(file)).toBe("/moved")
+  })
+
+  test("names nothing for a missing file, no file, or a transcript with no turn yet", async () => {
+    const empty = join(root, "empty.jsonl")
+    writeFileSync(empty, "")
+    expect(await latestTurnCwd(join(root, "missing.jsonl"))).toBeUndefined()
+    expect(await latestTurnCwd(null)).toBeUndefined()
+    expect(await latestTurnCwd(empty)).toBeUndefined()
   })
 })

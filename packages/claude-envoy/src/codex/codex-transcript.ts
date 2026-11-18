@@ -258,3 +258,43 @@ export function followTranscript(
     },
   }
 }
+
+/** How much of a transcript's end `latestTurnCwd` reads: every turn writes a `turn_context` line,
+ *  so the newest one is near the end, and a long session's file is never read whole. */
+const TURN_CWD_TAIL_BYTES = 512 * 1024
+
+/**
+ * The directory the session's newest turn ran in, from the last `turn_context` line of its
+ * transcript (`payload.cwd`, which Codex writes at every turn, measured on 0.154.0): where a
+ * `/cd` moved the session, and not the directory `SessionStart` named. Undefined when the file
+ * cannot be read or its end holds no such line.
+ */
+export async function latestTurnCwd(transcriptPath: string | null): Promise<string | undefined> {
+  if (transcriptPath === null) return undefined
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(transcriptPath, "r")
+    const { size } = await handle.stat()
+    const length = Math.min(size, TURN_CWD_TAIL_BYTES)
+    const buffer = Buffer.alloc(length)
+    await handle.read(buffer, 0, length, size - length)
+    const lines = buffer.toString("utf8").split("\n")
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const line = lines[index] ?? ""
+      if (!line.includes('"turn_context"')) continue
+      try {
+        const parsed = JSON.parse(line) as { type?: unknown; payload?: { cwd?: unknown } }
+        if (parsed.type === "turn_context" && typeof parsed.payload?.cwd === "string") {
+          return parsed.payload.cwd
+        }
+      } catch {
+        // A line cut by the tail's start, or one being written.
+      }
+    }
+    return undefined
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}

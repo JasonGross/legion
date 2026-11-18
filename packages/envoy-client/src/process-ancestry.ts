@@ -92,6 +92,13 @@ const PROC_READER: ProcessReader = { command: procCommand, parent: procParentPid
  * Linux it answers undefined and a caller keeps the rule it had without it. A shell that carries
  * both Claude Code's and the Codex CLI's variables, because one was started from the other's shell,
  * asks this which of the two its command runs under.
+ *
+ * A name is the kernel's command name, the base name of the binary the process executed, cut to
+ * 15 characters, with a trailing `.exe` taken off: Claude Code's npm package runs its binary as
+ * `bin/claude.exe`, whose name is `claude.exe`. A host started through an interpreter (an npm
+ * install that runs as `node`) has the interpreter's name, so the walk passes it and may stop at
+ * a host further out: a Claude Code run that way inside a Codex shell acts as the Codex session.
+ * `identity.go`'s `nearestHarness`, the broker client's walk, reads names by the same rule.
  */
 export function nearestAncestorNamed(
   names: readonly string[],
@@ -101,7 +108,7 @@ export function nearestAncestorNamed(
   if (reader === PROC_READER && process.platform !== "linux") return undefined;
   let current: number | undefined = pid;
   for (let step = 0; current !== undefined && current > 1 && step < MAX_ANCESTORS; step++) {
-    const command = reader.command(current);
+    const command = reader.command(current)?.replace(/\.exe$/, "");
     if (command !== undefined && names.includes(command)) return command;
     current = reader.parent(current);
   }

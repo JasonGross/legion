@@ -1,8 +1,11 @@
+import { spawnSync } from "node:child_process"
 import { readFileSync, readlinkSync } from "node:fs"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { z } from "zod"
+import { processExists } from "../session-identity"
+import { pruneStateDirectory } from "../session-state"
 
 /**
  * How the Codex plugin's MCP server learns which session it serves (INFRA-3558).
@@ -125,15 +128,54 @@ export function processStarted(pid: number): string | undefined {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
   } catch {
-    return undefined
+    // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
+    // within a second of the process it replaced exiting, and the hook and the server read it
+    // the same way.
+    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" })
+    const started = ps.status === 0 ? ps.stdout.trim() : ""
+    return started === "" ? undefined : `ps:${started}`
   }
 }
 
 /** Whether `record` belongs to the `codex` process `pid` now runs, rather than to an earlier
- *  process that had the same id. A record or a process whose start cannot be read is taken. */
+ *  process that had the same id. A record or a process whose start cannot be read is not taken:
+ *  records outlive their process, and a new `codex` that reused the pid would otherwise bind to the
+ *  old one's session and register it until its first prompt. */
 export function recordOfProcess(record: CodexSessionRecord, pid: number): boolean {
   const started = processStarted(pid)
-  return record.codex_started === null || started === undefined || record.codex_started === started
+  return record.codex_started !== null && started !== undefined && record.codex_started === started
+}
+
+/**
+ * Whether the `codex` process `pid` is Codex's shared app server (`codex app-server`), which runs
+ * several sessions in one process: a later plain `codex` reuses one `codex agents` started, and
+ * Codex 0.170.0's terminal runs every session in a background `codex app-server --managed-daemon`
+ * (measured on 0.170.0). This plugin keys a session by its process, so there two sessions would
+ * share one record and one hand-off, and one would take the other's identity, so it stands down.
+ */
+export function sharedAppServer(pid: number): boolean {
+  let argv: string[]
+  try {
+    argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
+  } catch {
+    const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" })
+    if (ps.status !== 0) return false
+    argv = ps.stdout.trim().split(/\s+/)
+  }
+  return argv.slice(1).includes("app-server")
+}
+
+/** What a session of the shared app server is told about Envoy and Dispatch. */
+export const SHARED_APP_SERVER_NOTE =
+  "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process. The Envoy plugin cannot tell which of them a call comes from, so it does not register this session with Envoy and its `dispatch` tool does not run."
+
+/** Removes the records of `codex` processes that have exited, so a later process that reuses a pid
+ *  never finds one. */
+export async function pruneCodexSessionRecords(stateDirectory: string): Promise<void> {
+  await pruneStateDirectory(join(stateDirectory, "codex-sessions"), (file) => {
+    const match = /^(\d+)\.json$/.exec(basename(file))
+    return match !== null && !processExists(Number(match[1]))
+  })
 }
 
 /** The binary the `codex` process `pid` runs, so the plugin calls the same Codex the session

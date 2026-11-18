@@ -22,6 +22,9 @@ import {
   codexProcessId,
   codexSessionRecordFile,
   processStarted,
+  pruneCodexSessionRecords,
+  SHARED_APP_SERVER_NOTE,
+  sharedAppServer,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -50,6 +53,12 @@ async function sessionStart(raw: unknown): Promise<void> {
   } else {
     const pid = codexProcessId()
     try {
+      await pruneCodexSessionRecords(pluginData)
+      if (sharedAppServer(pid)) {
+        // No record: two sessions of one process would share it (`sharedAppServer`).
+        process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
+        return
+      }
       await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
         codex_executable: codexExecutable(pid) ?? null,
         codex_home: codexHome(process.env),

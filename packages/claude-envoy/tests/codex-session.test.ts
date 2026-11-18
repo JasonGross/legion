@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chmodSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
@@ -14,8 +14,10 @@ import {
   codexProcessId,
   codexSessionRecordFile,
   processStarted,
+  pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
+  sharedAppServer,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
@@ -56,7 +58,40 @@ describe("the Codex session record", () => {
     expect(record.codex_started).not.toBeNull()
     expect(recordOfProcess(record, process.pid)).toBe(true)
     expect(recordOfProcess({ ...record, codex_started: "1" }, process.pid)).toBe(false)
-    expect(recordOfProcess({ ...record, codex_started: null }, process.pid)).toBe(true)
+    // A record whose start was not read, or a process whose start cannot be read, is not taken.
+    expect(recordOfProcess({ ...record, codex_started: null }, process.pid)).toBe(false)
+    const exited = Bun.spawnSync(["true"]).pid
+    expect(recordOfProcess(record, exited)).toBe(false)
+  })
+
+  test("Codex's shared app server is told apart from a codex process of its own", () => {
+    const shared = Bun.spawn(["sh", "-c", "sleep 5", "app-server"])
+    const own = Bun.spawn(["sleep", "5"])
+    try {
+      expect(sharedAppServer(shared.pid)).toBe(true)
+      expect(sharedAppServer(own.pid)).toBe(false)
+    } finally {
+      shared.kill()
+      own.kill()
+    }
+  })
+
+  test("the records of codex processes that exited are pruned, and a live one's is kept", async () => {
+    const state = join(directory, "prune")
+    const exited = Bun.spawnSync(["true"]).pid
+    const record = {
+      codex_executable: null,
+      codex_home: "/h",
+      codex_started: null,
+      cwd: "/w",
+      session_id: "s",
+      source: null,
+      transcript_path: null,
+    }
+    await writeCodexSessionRecord(codexSessionRecordFile(state, exited), record)
+    await writeCodexSessionRecord(codexSessionRecordFile(state, process.pid), record)
+    await pruneCodexSessionRecords(state)
+    expect(readdirSync(join(state, "codex-sessions")).sort()).toEqual([`${process.pid}.json`])
   })
 
   test("a message too long for one argument is spilled to a file the queued line names", () => {
