@@ -58,7 +58,7 @@ export async function registerServer(
     let seq = Math.max(0, ...(await entryNames(directory)).map(({ seq: taken }) => taken)) + 1
     for (;;) {
       try {
-        await link(temporary, join(directory, entryName({ seq })))
+        await place(temporary, join(directory, entryName({ seq })), pid, started)
         return { pid, seq, started }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
@@ -68,6 +68,34 @@ export async function registerServer(
   } finally {
     await rm(temporary, { force: true })
   }
+}
+
+/** Where `link` is refused (a file system without hard links), whether to fall back to an exclusive
+ *  create; set once seen, so the fallback is not tried before every link. */
+let linkRefused = false
+
+/**
+ * Puts the entry at `target`, failing with `EEXIST` when the name is taken: `link` of the fully
+ * written `temporary`, or, on a file system that refuses hard links (`EPERM`, `ENOTSUP`,
+ * `EXDEV`), an exclusive create that writes the whole entry in one small write.
+ */
+async function place(
+  temporary: string,
+  target: string,
+  pid: number,
+  started: string | null,
+): Promise<void> {
+  if (!linkRefused) {
+    try {
+      await link(temporary, target)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "EPERM" && code !== "ENOTSUP" && code !== "EXDEV") throw error
+      linkRefused = true
+    }
+  }
+  await writeFile(target, JSON.stringify({ pid, started }), { flag: "wx", mode: 0o600 })
 }
 
 /** Removes `self`'s entry. */
