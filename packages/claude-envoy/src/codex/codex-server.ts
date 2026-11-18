@@ -20,6 +20,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { connect } from "nats"
 import { z } from "zod"
+/** The npm package a Codex session runs, which its registrations name. */
+import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { type: "json" }
 import type { ChannelConnection } from "../channel-topics"
 import { configuredValue } from "../claude-session"
 import {
@@ -37,7 +39,7 @@ import { installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
-import { askSideQuestion, type CodexCommand, queueMessage } from "./codex-cli"
+import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
 import { codexInboxDirectory } from "./codex-inbox"
 import {
@@ -324,7 +326,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
 
   const command = (): CodexCommand => ({
     codexHome: record?.codex_home ?? bound.codex_home,
-    env: process.env,
+    // Codex's own environment, not this server's: Codex gave this server only `env_vars`.
+    env: codexProcessEnv(codexPid, process.env),
     executable: record?.codex_executable ?? bound.codex_executable ?? "codex",
   })
   const client = createEnvoyClient({
@@ -400,6 +403,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
             codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
         },
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
+        pluginName: CODEX_PACKAGE_NAME,
         router: (state) =>
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),

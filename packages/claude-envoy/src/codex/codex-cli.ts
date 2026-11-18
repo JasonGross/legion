@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 /**
@@ -20,6 +20,35 @@ export interface CodexCommand {
 
 /** How long `codex queue` may take before it counts as failed. */
 const QUEUE_TIMEOUT_MS = 30_000
+
+/**
+ * The environment the `codex` process `pid` started with, read from `/proc/<pid>/environ`, or
+ * `fallback` where that file cannot be read (another platform, another user's process).
+ *
+ * Codex starts a plugin's MCP server with only the variables its manifest's `env_vars` names, so
+ * this server's own environment lacks the ones Codex itself reads, among them the variable a
+ * model provider's `env_key` names. A `codex app-server` run in that environment answers a side
+ * question's turn ``Missing environment variable: `<env_key>` `` (measured on 0.154.0 against a
+ * provider whose key is an environment variable). The process the session runs in has them.
+ */
+export function codexProcessEnv(
+  pid: number,
+  fallback: Readonly<Record<string, string | undefined>>,
+  read: (path: string) => string = (path) => readFileSync(path, "latin1"),
+): Readonly<Record<string, string | undefined>> {
+  let raw: string
+  try {
+    raw = read(`/proc/${pid}/environ`)
+  } catch {
+    return fallback
+  }
+  const env: Record<string, string> = {}
+  for (const entry of raw.split("\0")) {
+    const equals = entry.indexOf("=")
+    if (equals > 0) env[entry.slice(0, equals)] = entry.slice(equals + 1)
+  }
+  return Object.keys(env).length === 0 ? fallback : env
+}
 
 function childEnv(command: CodexCommand): Record<string, string> {
   const env: Record<string, string> = {}

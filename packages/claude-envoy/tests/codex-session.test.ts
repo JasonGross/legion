@@ -6,7 +6,7 @@ import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
-import { fitArgument } from "../src/codex/codex-cli"
+import { codexProcessEnv, fitArgument } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
 import {
   codexHome,
@@ -304,5 +304,33 @@ describe("the Codex router of a person's messages", () => {
     await Bun.sleep(10)
     expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
     expect(delivered).toEqual([])
+  })
+})
+
+describe("the environment a side question and codex queue run in", () => {
+  test("is the codex process's own, read from /proc, so a model provider's env_key reaches it", () => {
+    const read = (path: string): string => {
+      expect(path).toBe("/proc/4242/environ")
+      return "HOME=/home/a\0MODEL_GATEWAY_TOKEN=t=1\0EMPTY=\0"
+    }
+    expect(codexProcessEnv(4242, { HOME: "/server" }, read)).toEqual({
+      EMPTY: "",
+      HOME: "/home/a",
+      MODEL_GATEWAY_TOKEN: "t=1",
+    })
+  })
+
+  test("is the server's own where /proc cannot be read or holds nothing", () => {
+    const fallback = { HOME: "/server" }
+    const refuse = (): string => {
+      throw new Error("ENOENT")
+    }
+    expect(codexProcessEnv(4242, fallback, refuse)).toBe(fallback)
+    expect(codexProcessEnv(4242, fallback, () => "")).toBe(fallback)
+  })
+
+  test("reads this very process's environment from /proc on Linux", () => {
+    if (process.platform !== "linux") return
+    expect(codexProcessEnv(process.pid, {})["PATH"]).toBe(process.env["PATH"])
   })
 })
