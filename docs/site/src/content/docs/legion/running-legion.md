@@ -298,8 +298,8 @@ Dispatch read them, delete the files, then install every App from
   [Issue sizing](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#issue-sizing-one-reservation-per-pod)
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
-  250m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time and runs no lane or browser, and a larger probe could keep the daemon from
+  500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
+  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
   booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
@@ -354,8 +354,10 @@ Dispatch read them, delete the files, then install every App from
 
 Every agent runs from `ghcr.io/cybermonklabs/legion-worker`, which carries Oh My Pi, Legion's two plugins
 (`@sjawhar/pi-envoy` and `@sjawhar/pi-legion`), the `legion` CLI, a general toolchain (git, jj, gh,
-Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, kubectl, yq, unzip) and the
-client tools a role's own work needs (`psql`, `redis-cli`, `sqlite3`, `nc`, `dig`): `apt` cannot write a system
+mise, Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, the Google Cloud SDK's
+gcloud and bq, azure-cli's az, kubectl, yq, unzip, tmux, busybox, and the host libraries
+Playwright's WebKit needs) and the client tools a role's own work needs (`psql`, `redis-cli`,
+`sqlite3`, `nc`, `dig`): `apt` cannot write a system
 prefix in an unprivileged container, unpacking
 one by hand works for some tools and not others, and what rules out a client a role unpacks onto
 its own `PATH` is the withheld `operator-setup` capability, not the unpacking itself.
