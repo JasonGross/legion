@@ -25,10 +25,14 @@ export const CodexSessionRecord = z.object({
   source: z.string().nullable(),
   /** The `codex` binary the session runs (`/proc/<pid>/exe`), or null where it cannot be read. */
   codex_executable: z.string().nullable(),
-  /** When the `codex` process started, as `/proc/<pid>/stat` counts it, or null where it cannot
-   *  be read. A record whose start is not the server's parent's was written by an earlier process
-   *  that had the same id, and names nothing the server runs under. */
+  /** When the `codex` process started (`processStarted`: `/proc/<pid>/stat`, or `ps` where there
+   *  is no /proc). A record whose start is not the server's parent's was written by an earlier
+   *  process that had the same id, and names nothing the server runs under; the hook writes no
+   *  record where the start cannot be read. Null only in a record of an earlier build. */
   codex_started: z.string().nullable().default(null),
+  /** Set by the `SessionEnd` hook when this session ended (`/new`, exit): no message is delivered
+   *  to it from then until the next `SessionStart` names the session that follows. */
+  ended: z.boolean().default(false),
 })
 export type CodexSessionRecord = z.infer<typeof CodexSessionRecord>
 
@@ -121,8 +125,17 @@ function procParent(pid: number): number | undefined {
   }
 }
 
-/** When process `pid` started, as the 22nd field of `/proc/<pid>/stat` (clock ticks since boot),
- *  or undefined where it cannot be read. Two processes that had one id never share it. */
+/** How the hook and the server run `ps`: in one fixed environment, so the start time each prints
+ *  is the same text (macOS's `ps` formats it by the locale and the time zone), and briefly. */
+const PS_OPTIONS = {
+  encoding: "utf8",
+  env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
+  timeout: 1_000,
+} as const
+
+/** When process `pid` started: the 22nd field of `/proc/<pid>/stat` (clock ticks since boot), or
+ *  where there is no /proc, `ps`'s start time to the second, prefixed `ps:`; undefined where
+ *  neither can be read. Two processes that had one id never share it. */
 export function processStarted(pid: number): string | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
@@ -131,7 +144,7 @@ export function processStarted(pid: number): string | undefined {
     // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
     // within a second of the process it replaced exiting, and the hook and the server read it
     // the same way.
-    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" })
+    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
     const started = ps.status === 0 ? ps.stdout.trim() : ""
     return started === "" ? undefined : `ps:${started}`
   }
@@ -158,16 +171,52 @@ export function sharedAppServer(pid: number): boolean {
   try {
     argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
   } catch {
-    const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" })
+    const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], PS_OPTIONS)
     if (ps.status !== 0) return false
     argv = ps.stdout.trim().split(/\s+/)
   }
-  return argv.slice(1).includes("app-server")
+  return codexSubcommand(argv.slice(1)) === "app-server"
+}
+
+/** The options of `codex` that take a value as the next argument (`codex --help`, 0.154.0). */
+const VALUE_OPTIONS = new Set([
+  "-c",
+  "--config",
+  "--enable",
+  "--disable",
+  "--remote",
+  "--remote-auth-token-env",
+  "-i",
+  "--image",
+  "-m",
+  "--model",
+  "--local-provider",
+  "-p",
+  "--profile",
+  "-s",
+  "--sandbox",
+  "-a",
+  "--ask-for-approval",
+  "-C",
+  "--cd",
+  "--add-dir",
+])
+
+/** The subcommand of a `codex` command line (its arguments after the binary): the first argument
+ *  that is neither an option nor an option's value, or undefined when there is none. */
+export function codexSubcommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ""
+    if (arg === "--") return args[index + 1]
+    if (!arg.startsWith("-")) return arg
+    if (VALUE_OPTIONS.has(arg)) index++
+  }
+  return undefined
 }
 
 /** What a session of the shared app server is told about Envoy and Dispatch. */
 export const SHARED_APP_SERVER_NOTE =
-  "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process. The Envoy plugin cannot tell which of them a call comes from, so it does not register this session with Envoy and its `dispatch` tool does not run."
+  "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process, so the Envoy plugin does not register it with Envoy: it receives no Envoy messages and does not show on Dispatch's Agents page. Its `dispatch` tool works, acting as this session."
 
 /** Removes the records of `codex` processes that have exited, so a later process that reuses a pid
  *  never finds one. */

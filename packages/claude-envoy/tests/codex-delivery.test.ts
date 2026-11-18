@@ -209,6 +209,17 @@ describe("createCodexDelivery", () => {
     delivery.stop()
   })
 
+  test("after SessionEnd every write is refused until the next session binds", async () => {
+    const { delivery, queued } = harness(inbox())
+    delivery.sessionEnded()
+    await expect(delivery.deliver({ content: "to nobody" })).rejects.toThrow("session ended")
+    expect(queued).toEqual([])
+    await delivery.rebind()
+    await delivery.deliver({ content: "to the next session" })
+    expect(queued).toEqual(["to the next session"])
+    delivery.stop()
+  })
+
   test("stopping rejects a line still waiting and removes it, so Envoy's resend is its one copy", async () => {
     const directory = inbox()
     const { delivery } = harness(directory)

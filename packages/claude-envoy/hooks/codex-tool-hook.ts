@@ -1,10 +1,11 @@
 // The Codex CLI's `PostToolUse` hook for the Envoy plugin (INFRA-3558): `codex/hooks/hooks.json`
 // runs `dist/codex-tool-hook.js` after every tool call of a Codex session.
 //
-// It takes every message waiting in the session's inbox (`../src/codex/codex-inbox`) and hands
-// them to Codex as the hook's `additionalContext`, which reaches the model in its very next
-// request, inside the running turn (measured on Codex CLI 0.154.0). With nothing waiting it
-// prints nothing. It runs after every tool call, so it is a bundle of its own and imports only the
+// It takes the messages waiting in the session's inbox (`../src/codex/codex-inbox`), oldest first
+// and as many as fit under Codex's cap on a hook's text (`HOOK_CONTEXT_MAX_BYTES`), and hands them
+// to Codex as the hook's `additionalContext`, which reaches the model in its very next request,
+// inside the running turn (measured on Codex CLI 0.154.0). A message that does not fit, and every
+// one behind it, waits for `codex queue` at the turn's end. With nothing waiting it prints nothing. It runs after every tool call, so it is a bundle of its own and imports only the
 // inbox, which needs nothing but the filesystem; and it exits 0 whatever happens, because a
 // failure here must never fail the tool call it follows.
 

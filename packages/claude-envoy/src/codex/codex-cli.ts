@@ -34,7 +34,7 @@ const QUEUE_TIMEOUT_MS = 30_000
 export function codexProcessEnv(
   pid: number,
   fallback: Readonly<Record<string, string | undefined>>,
-  read: (path: string) => string = (path) => readFileSync(path, "latin1"),
+  read: (path: string) => string = (path) => readFileSync(path, "utf8"),
 ): Readonly<Record<string, string | undefined>> {
   let raw: string
   try {

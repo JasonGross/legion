@@ -23,6 +23,8 @@ import {
   codexSessionRecordFile,
   processStarted,
   pruneCodexSessionRecords,
+  readCodexSessionRecord,
+  recordOfProcess,
   SHARED_APP_SERVER_NOTE,
   sharedAppServer,
   writeCodexSessionRecord,
@@ -43,6 +45,28 @@ const SessionStartInput = z.object({
 export const CODEX_DISPATCH_NOTE =
   "This Codex session reaches Dispatch through the `dispatch` tool of the `envoy` MCP server, not a shell command: Codex puts no plugin command on the shell's PATH, and its sandbox keeps shell commands off the network. Wherever a skill shows `dispatch <command> <flags>`, call the `dispatch` tool with `args` set to the words after `dispatch`, as a list, and `stdin` set to what the command would read on standard input (a here-document's text). It runs the same command, as this session, and answers with what the command prints and its exit code."
 
+const SessionEndInput = z.object({ session_id: z.string().min(1) })
+
+/**
+ * `SessionEnd` (`/new`, exit): marks this process's record ended when it names the session that
+ * ended, so the server delivers nothing more to it, and answers no Envoy frame as delivered into a
+ * thread nobody has open, until the next `SessionStart` names the session that follows. The end of
+ * another session of the process (an ephemeral fork) leaves the record alone.
+ */
+async function sessionEnd(raw: unknown): Promise<void> {
+  const input = SessionEndInput.parse(raw)
+  const pluginData = configuredValue(
+    process.env["PLUGIN_DATA"] ?? process.env["CLAUDE_PLUGIN_DATA"],
+  )
+  if (pluginData === undefined) return
+  const pid = codexProcessId()
+  const file = codexSessionRecordFile(pluginData, pid)
+  const record = await readCodexSessionRecord(file)
+  if (record === undefined || record.session_id !== input.session_id) return
+  if (!recordOfProcess(record, pid) || record.ended) return
+  await writeCodexSessionRecord(file, { ...record, ended: true })
+}
+
 async function sessionStart(raw: unknown): Promise<void> {
   const input = SessionStartInput.parse(raw)
   const pluginData = configuredValue(
@@ -54,21 +78,34 @@ async function sessionStart(raw: unknown): Promise<void> {
     const pid = codexProcessId()
     try {
       await pruneCodexSessionRecords(pluginData)
+    } catch (error) {
+      process.stderr.write(`envoy: could not prune old session records — ${messageFor(error)}\n`)
+    }
+    try {
+      const started = processStarted(pid)
       if (sharedAppServer(pid)) {
         // No record: two sessions of one process would share it (`sharedAppServer`).
         process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
-        return
+      } else if (input.transcript_path === null || input.transcript_path === undefined) {
+        // An ephemeral fork (`/side`, `/btw`) of the session this process runs: it keeps no
+        // transcript, and recording it would move the session's registration to the fork.
+      } else if (started === undefined) {
+        process.stderr.write(
+          `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
+        )
+      } else {
+        await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
+          codex_executable: codexExecutable(pid) ?? null,
+          codex_home: codexHome(process.env),
+          codex_started: started,
+          cwd: input.cwd,
+          ended: false,
+          session_id: input.session_id,
+          source: input.source ?? null,
+          transcript_path: input.transcript_path,
+        })
+        await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
       }
-      await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
-        codex_executable: codexExecutable(pid) ?? null,
-        codex_home: codexHome(process.env),
-        codex_started: processStarted(pid) ?? null,
-        cwd: input.cwd,
-        session_id: input.session_id,
-        source: input.source ?? null,
-        transcript_path: input.transcript_path ?? null,
-      })
-      await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
     } catch (error) {
       process.stderr.write(`envoy: could not record the session id — ${messageFor(error)}\n`)
     }
@@ -102,12 +139,13 @@ async function sessionStart(raw: unknown): Promise<void> {
 if (import.meta.main) {
   const [mode] = process.argv.slice(2)
   try {
-    if (mode !== "session-start") {
+    if (mode === "session-start") await sessionStart(JSON.parse(await Bun.stdin.text()))
+    else if (mode === "session-end") await sessionEnd(JSON.parse(await Bun.stdin.text()))
+    else {
       throw new Error(
-        `unknown mode ${JSON.stringify(mode)}; codex/hooks/hooks.json names session-start`,
+        `unknown mode ${JSON.stringify(mode)}; codex/hooks/hooks.json names session-start and session-end`,
       )
     }
-    await sessionStart(JSON.parse(await Bun.stdin.text()))
   } catch (error) {
     process.stderr.write(`envoy: codex-hook: ${messageFor(error)}\n`)
   }

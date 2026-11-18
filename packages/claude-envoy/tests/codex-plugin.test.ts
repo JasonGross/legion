@@ -114,7 +114,17 @@ describe("the built Codex plugin", () => {
       readdirSync(join(packageRoot, "skills")).sort(),
     )
     const hooks = JSON.parse(readFileSync(join(out, "hooks", "hooks.json"), "utf8"))
-    expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "SessionStart"])
+    expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "SessionEnd", "SessionStart"])
+    const commands: string[] = Object.values(hooks.hooks)
+      .flat()
+      .flatMap((group) =>
+        (group as { hooks: { command: string }[] }).hooks.map((hook) => hook.command),
+      )
+    // Every session-hook.js call reads the Codex host's envoy.json, not Claude Code's.
+    const sessionHooks = commands.filter((command) => command.includes("session-hook.js"))
+    expect(sessionHooks.length).toBeGreaterThan(0)
+    for (const command of sessionHooks) expect(command).toEndWith("--host codex")
+    expect(commands.some((command) => command.endsWith('codex-hook.js" session-end'))).toBe(true)
   })
 
   test("has the manifest shape Codex's validator accepts", () => {

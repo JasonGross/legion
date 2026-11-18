@@ -9,7 +9,7 @@ func TestHarnessNameReadsClaudeCodesNpmBinaryAsClaude(t *testing.T) {
 		"codex\n":      "codex",
 		"node\n":       "node",
 	} {
-		if got := harnessName([]byte(comm)); got != want {
+		if got := harnessName(comm); got != want {
 			t.Errorf("harnessName(%q) = %q, want %q", comm, got, want)
 		}
 	}

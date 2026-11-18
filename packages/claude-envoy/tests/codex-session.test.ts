@@ -8,11 +8,13 @@ import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
+import { callingThread } from "../src/codex/codex-server"
 import {
   codexHome,
   codexPluginDataDirectory,
   codexProcessId,
   codexSessionRecordFile,
+  codexSubcommand,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
@@ -34,6 +36,7 @@ describe("the Codex session record", () => {
       codex_executable: "/opt/codex",
       codex_home: "/home/a/.codex",
       codex_started: "123",
+      ended: false,
       cwd: "/work",
       session_id: "01a1",
       source: "startup",
@@ -51,6 +54,7 @@ describe("the Codex session record", () => {
       codex_home: "/h",
       cwd: "/w",
       codex_started: processStarted(process.pid) ?? null,
+      ended: false,
       session_id: "s",
       source: null,
       transcript_path: null,
@@ -65,8 +69,10 @@ describe("the Codex session record", () => {
   })
 
   test("Codex's shared app server is told apart from a codex process of its own", () => {
-    const shared = Bun.spawn(["sh", "-c", "sleep 5", "app-server"])
-    const own = Bun.spawn(["sleep", "5"])
+    // `sleep 5; :` so the shell cannot exec sleep in its own place, which would drop app-server
+    // from its arguments. `-c` takes a value for codex as for sh, so the subcommand is app-server.
+    const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
+    const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
     try {
       expect(sharedAppServer(shared.pid)).toBe(true)
       expect(sharedAppServer(own.pid)).toBe(false)
@@ -76,6 +82,15 @@ describe("the Codex session record", () => {
     }
   })
 
+  test("the subcommand is the first argument that is neither an option nor an option's value", () => {
+    expect(codexSubcommand(["app-server", "--listen", "unix://"])).toBe("app-server")
+    expect(codexSubcommand(["-c", "model=x", "app-server"])).toBe("app-server")
+    expect(codexSubcommand(["-C", "app-server"])).toBeUndefined()
+    expect(codexSubcommand(["resume", "app-server"])).toBe("resume")
+    expect(codexSubcommand(["fix", "the", "app-server", "tests"])).toBe("fix")
+    expect(codexSubcommand(["--dangerously-bypass-hook-trust"])).toBeUndefined()
+  })
+
   test("the records of codex processes that exited are pruned, and a live one's is kept", async () => {
     const state = join(directory, "prune")
     const exited = Bun.spawnSync(["true"]).pid
@@ -83,6 +98,7 @@ describe("the Codex session record", () => {
       codex_executable: null,
       codex_home: "/h",
       codex_started: null,
+      ended: false,
       cwd: "/w",
       session_id: "s",
       source: null,
@@ -346,11 +362,11 @@ describe("the environment a side question and codex queue run in", () => {
   test("is the codex process's own, read from /proc, so a model provider's env_key reaches it", () => {
     const read = (path: string): string => {
       expect(path).toBe("/proc/4242/environ")
-      return "HOME=/home/a\0MODEL_GATEWAY_TOKEN=t=1\0EMPTY=\0"
+      return "HOME=/home/José\0MODEL_GATEWAY_TOKEN=t=1\0EMPTY=\0"
     }
     expect(codexProcessEnv(4242, { HOME: "/server" }, read)).toEqual({
       EMPTY: "",
-      HOME: "/home/a",
+      HOME: "/home/José",
       MODEL_GATEWAY_TOKEN: "t=1",
     })
   })
@@ -364,9 +380,15 @@ describe("the environment a side question and codex queue run in", () => {
     expect(codexProcessEnv(4242, fallback, () => "")).toBe(fallback)
   })
 
-  test("reads this very process's environment from /proc on Linux", () => {
+  test("reads a process's environment from /proc on Linux, non-ASCII values intact", async () => {
     if (process.platform !== "linux") return
-    expect(codexProcessEnv(process.pid, {})["PATH"]).toBe(process.env["PATH"])
+    const child = Bun.spawn(["sh", "-c", "sleep 5; :"], { env: { NAME: "José", PATH: "/bin" } })
+    try {
+      await Bun.sleep(50)
+      expect(codexProcessEnv(child.pid, {})["NAME"]).toBe("José")
+    } finally {
+      child.kill()
+    }
   })
 })
 
@@ -384,5 +406,17 @@ describe("codex queue", () => {
       "thread-1",
       "--message=- item\n- two",
     ])
+  })
+})
+
+describe("the Codex thread a tool call comes from", () => {
+  test("is the _meta threadId Codex sends, else its turn metadata's thread_id", () => {
+    expect(callingThread({ threadId: "t-1", "x-codex-turn-metadata": { thread_id: "t-2" } })).toBe(
+      "t-1",
+    )
+    expect(callingThread({ "x-codex-turn-metadata": { thread_id: "t-2" } })).toBe("t-2")
+    expect(callingThread({ progressToken: 1 })).toBeUndefined()
+    expect(callingThread(undefined)).toBeUndefined()
+    expect(callingThread({ threadId: "" })).toBeUndefined()
   })
 })

@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
   type CodexTranscriptEvent,
+  findTranscript,
   followTranscript,
   latestTurnCwd,
   transcriptEvents,
@@ -158,5 +159,31 @@ describe("latestTurnCwd", () => {
     expect(await latestTurnCwd(join(root, "missing.jsonl"))).toBeUndefined()
     expect(await latestTurnCwd(null)).toBeUndefined()
     expect(await latestTurnCwd(empty)).toBeUndefined()
+  })
+})
+
+describe("latestTurnCwd on a long turn", () => {
+  const root = temporaryDirectory("codex-turn-cwd-long")
+
+  test("finds the newest turn however much was written after it", async () => {
+    const file = join(root, "rollout.jsonl")
+    const turn = JSON.stringify({ payload: { cwd: "/deep", model: "m" }, type: "turn_context" })
+    const filler = JSON.stringify({ payload: { text: "y".repeat(1000) }, type: "event_msg" })
+    writeFileSync(file, `${turn}\n${Array.from({ length: 2000 }, () => filler).join("\n")}\n`)
+    expect(await latestTurnCwd(file)).toBe("/deep")
+  })
+})
+
+describe("findTranscript", () => {
+  const home = temporaryDirectory("codex-find-transcript")
+
+  test("finds a thread's transcript under the Codex home, and nothing for another thread", async () => {
+    const day = join(home, "sessions", "2026", "11", "18")
+    mkdirSync(day, { recursive: true })
+    const file = join(day, "rollout-2026-11-18T04-44-41-01a1ecf8-823b-78b3.jsonl")
+    writeFileSync(file, "")
+    expect(await findTranscript(home, "01a1ecf8-823b-78b3")).toBe(file)
+    expect(await findTranscript(home, "01a1ffff-0000-0000")).toBeNull()
+    expect(await findTranscript(home, "../escape")).toBeNull()
   })
 })

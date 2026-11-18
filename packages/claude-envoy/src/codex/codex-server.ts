@@ -44,6 +44,7 @@ import { createCodexDelivery } from "./codex-delivery"
 import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
 import {
   type CodexSessionRecord,
+  codexHome,
   codexPluginDataDirectory,
   codexSessionRecordFile,
   readCodexSessionRecord,
@@ -52,6 +53,7 @@ import {
   sharedAppServer,
 } from "./codex-session-record"
 import {
+  findTranscript,
   followTranscript,
   latestTurnCwd,
   type TranscriptFollower,
@@ -87,6 +89,21 @@ const DispatchToolArguments = z.object({
   args: z.array(z.string()),
   stdin: z.string().optional(),
 })
+
+/**
+ * The Codex thread whose turn made a tool call, from the request's `_meta`: Codex 0.154.0 sends
+ * `threadId` on every MCP tool call, beside `x-codex-turn-metadata` naming the same thread
+ * (measured). Undefined when the call names none.
+ */
+export function callingThread(meta: unknown): string | undefined {
+  if (typeof meta !== "object" || meta === null) return undefined
+  const named = (meta as { threadId?: unknown }).threadId
+  if (typeof named === "string" && named !== "") return named
+  const turn = (meta as { "x-codex-turn-metadata"?: { thread_id?: unknown } })[
+    "x-codex-turn-metadata"
+  ]
+  return typeof turn?.thread_id === "string" && turn.thread_id !== "" ? turn.thread_id : undefined
+}
 
 /** The `dispatch` tool's definition: the command, as a tool that runs outside Codex's sandbox. */
 export function dispatchToolDefinition() {
@@ -217,36 +234,46 @@ export async function runCodexEnvoyServer(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "dispatch") {
+      const thread = callingThread(request.params._meta)
       return {
-        content: [{ text: await runDispatchTool(request.params.arguments), type: "text" as const }],
+        content: [
+          { text: await runDispatchTool(request.params.arguments, thread), type: "text" as const },
+        ],
       }
     }
     if (runtime === undefined) throw new Error(`Envoy is not ready: ${notReady}`)
     return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
   })
 
-  /** Runs the `dispatch` command in this process, as the session the codex process runs now and in
-   *  the directory its newest turn ran in, and answers what it printed and its exit code. */
-  const runDispatchTool = async (raw: unknown): Promise<string> => {
-    if (shared) return `dispatch: ${SHARED_APP_SERVER_NOTE}\n[exit 2]`
+  /** Runs the `dispatch` command in this process, as `thread`, the Codex thread whose turn made the
+   *  call, in the directory that thread's newest turn ran in, and answers what it printed and its
+   *  exit code. Codex names the thread on every tool call (`callingThread`), so a fork or a second
+   *  session of the same process acts as itself and never as the session Envoy registered. */
+  const runDispatchTool = async (raw: unknown, thread: string | undefined): Promise<string> => {
     const parsed = DispatchToolArguments.safeParse(raw)
     if (!parsed.success)
       return `dispatch: the tool takes args (a list of strings) and an optional stdin\n[exit 2]`
-    // The hook writes the record before the turn's first request, but the server reads it on a
-    // poll, so a call in the session's first turn can arrive first: it reads the record itself.
-    const read = record ?? (await readCodexSessionRecord(recordFile))
+    // The record, read now when the server has not seen it yet: the hook writes it before the turn's
+    // first request, and the server reads it on a poll.
+    const read = shared ? undefined : (record ?? (await readCodexSessionRecord(recordFile)))
     const current = read !== undefined && recordOfProcess(read, codexPid) ? read : undefined
-    // The session the codex process runs now, as its record names it: after `/new` the record
-    // moves at once, while `identity` follows only when Envoy hands the session over.
-    const sessionId = current?.session_id
-    if (sessionId === undefined || current === undefined) {
-      return `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
+    // A Codex that names no thread on the call (older than 0.154.0) acts as the record's session,
+    // which is the one session of a process this plugin registers; under the shared app server
+    // there is no such session to fall back on.
+    const sessionId = thread ?? current?.session_id
+    if (sessionId === undefined) {
+      return shared
+        ? `dispatch: ${SHARED_APP_SERVER_NOTE}\n[exit 2]`
+        : `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
     }
+    const own = current?.session_id === sessionId ? current : undefined
+    const home = own?.codex_home ?? codexHome(process.env)
+    const transcript = own?.transcript_path ?? (await findTranscript(home, sessionId))
     const env: Record<string, string> = {}
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined) env[name] = value
     }
-    env["CODEX_HOME"] = current.codex_home
+    env["CODEX_HOME"] = home
     env["CODEX_THREAD_ID"] = sessionId
     env["DISPATCH_HOST"] = "codex"
     if (configFile.path !== null) env["ENVOY_CONFIG_FILE"] = configFile.path
@@ -254,7 +281,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       join(pluginRoot, "dist", "dispatch.js"),
       parsed.data.args,
       parsed.data.stdin ?? "",
-      { cwd: (await latestTurnCwd(current.transcript_path)) ?? current.cwd, env },
+      { cwd: (await latestTurnCwd(transcript)) ?? own?.cwd ?? homedir(), env },
     )
     return `${output}${output.endsWith("\n") || output === "" ? "" : "\n"}[exit ${code}]`
   }
@@ -314,7 +341,14 @@ export async function runCodexEnvoyServer(): Promise<void> {
   watchFile(recordFile, { interval: RECORD_POLL_MS }, () => {
     void readCodexSessionRecord(recordFile).then((next) => {
       if (next === undefined || !recordOfProcess(next, codexPid)) return
-      if (next.session_id === record?.session_id) return
+      if (next.session_id === record?.session_id) {
+        // The same session, ended (`SessionEnd`): nothing is delivered to it from now.
+        if (next.ended && record?.ended !== true) {
+          record = next
+          delivery?.sessionEnded()
+        }
+        return
+      }
       record = next
       if (ready) moveTo(next)
     })

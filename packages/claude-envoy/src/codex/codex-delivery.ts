@@ -1,5 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors"
-import { type CodexInboxItem, discardWaiting, putInbox, takeInbox, takenBy } from "./codex-inbox"
+import { type CodexInboxItem, putInbox, takeInbox, takenBy, withdrawWaiting } from "./codex-inbox"
 
 /**
  * Puts a line into a Codex session's conversation (INFRA-3558).
@@ -47,6 +47,9 @@ export interface CodexDelivery {
   turnStarted(): void
   /** The transcript says the turn ended: anything still waiting goes to `codex queue`. */
   turnEnded(): Promise<void>
+  /** The session ended (`SessionEnd`, at `/new` or exit): every write from now is refused, so its
+   *  Envoy frame stays unanswered and is sent again, until `rebind` names the session that follows. */
+  sessionEnded(): void
   /** The process moved to another session (`/new`): no turn of it runs yet, and what waited for
    *  the old one goes to the new one. */
   rebind(): Promise<void>
@@ -69,6 +72,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
   const pollMs = options.pollMs ?? WAITING_POLL_MS
   let running = false
   let stopped = false
+  let ended = false
   /** Every line in an inbox whose write has not resolved, by file name. */
   const waiting = new Map<string, Waiter>()
   /** One sweep at a time, so a line is never queued twice by two sweeps. */
@@ -120,6 +124,11 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
   return {
     async deliver(item) {
       if (stopped) throw new Error("the Codex session's delivery has stopped")
+      if (ended) {
+        throw new Error(
+          "the Codex session ended; the message is sent again once the session that follows starts",
+        )
+      }
       if (!running) {
         await options.queue(item.content)
         return
@@ -141,7 +150,12 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       await check().catch((error: unknown) => options.warn(messageFor(error)))
       await sweep()
     },
+    sessionEnded() {
+      ended = true
+      running = false
+    },
     async rebind() {
+      ended = false
       running = false
       await sweep()
     },
@@ -149,19 +163,23 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     stop() {
       stopped = true
       clearInterval(timer)
-      // A refused write leaves its Envoy frame unanswered, so Envoy sends it again; its line is
-      // removed, so the hook or a later server's sweep does not deliver it a second time.
-      const refused = new Map<string, Set<string>>()
-      for (const [name, waiter] of waiting) {
-        refused.set(waiter.directory, (refused.get(waiter.directory) ?? new Set()).add(name))
-        waiter.reject(
-          new Error("the Codex session's delivery stopped before the message was taken"),
-        )
-      }
+      // A refused write leaves its Envoy frame unanswered, so Envoy sends it again. Each line is
+      // withdrawn before its write is refused, so the hook cannot deliver it as well; a line the
+      // hook took first was delivered, and its write resolves.
+      const left = [...waiting]
       waiting.clear()
-      for (const [directory, names] of refused) {
-        void discardWaiting(directory, (name) => !names.has(name)).catch(() => undefined)
-      }
+      void Promise.all(
+        left.map(async ([name, waiter]) => {
+          if (await withdrawWaiting(waiter.directory, name)) {
+            waiter.reject(
+              new Error("the Codex session's delivery stopped before the message was taken"),
+            )
+          } else {
+            if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
+            waiter.resolve()
+          }
+        }),
+      )
     },
   }
 }

@@ -144,8 +144,6 @@ const ANSWERS_LEAST_WAIT_MS = 150
 /** How long after the hook's print deadline a read that answered past it may still write
  *  `answers.json` for the next hook before the process exits. */
 const ANSWERS_SETTLE_MS = 50
-/** The refresher's lock, holding its pid, and what it read for the hooks, in the session's
- *  Dispatch state directory. */
 /**
  * The host whose envoy.json this hook reads, and its mode and the mode's own arguments, from
  * `<mode> [arguments…] [--host <claude|codex>]`. Claude Code's hooks.json names no host, so it is
@@ -154,6 +152,8 @@ const ANSWERS_SETTLE_MS = 50
  */
 const { host: HOST, mode, modeArguments } = parseHookArguments(process.argv.slice(2))
 
+/** The refresher's lock, holding its pid, and what it read for the hooks, in the session's
+ *  Dispatch state directory. */
 const REFRESH_LOCK = "answers-refresh.lock"
 const REFRESH_OUTCOME = "answers-refresh.json"
 /** How often a hook waiting on the refresher looks for what it read. */

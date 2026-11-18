@@ -19,13 +19,11 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -138,16 +136,8 @@ func requestSessionID() string {
 	return others
 }
 
-// harnessName is the name nearestHarness compares for a /proc/<pid>/comm: the command name, with
-// a trailing ".exe" taken off.
-func harnessName(comm []byte) string {
-	return strings.TrimSuffix(strings.TrimSpace(string(comm)), ".exe")
-}
-
-// nearestHarness answers which of names the nearest ancestor of this process (itself included)
-// runs as, by the command name Linux keeps in /proc/<pid>/comm, or "" when the walk meets none of
-// them within 64 steps, reaches init, or cannot read /proc (off Linux). A variable so a test can
-// stand in for the process tree.
+// harnessName is the name nearestHarness compares for a process's comm: the command name, with a
+// trailing ".exe" taken off.
 //
 // A name is the base name of the binary the process executed, cut to 15 characters, with a
 // trailing ".exe" taken off: Claude Code's npm package runs its binary as bin/claude.exe. A host
@@ -155,35 +145,8 @@ func harnessName(comm []byte) string {
 // so the walk passes it and may stop at a host further out, and a Claude Code run that way inside
 // a Codex shell names the Codex thread. dispatch's walk (nearestAncestorNamed,
 // packages/envoy-client/src/process-ancestry.ts) reads names by the same rule.
-var nearestHarness = func(names ...string) string {
-	pid := os.Getpid()
-	for step := 0; pid > 1 && step < 64; step++ {
-		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-		if err != nil {
-			return ""
-		}
-		name := harnessName(comm)
-		for _, wanted := range names {
-			if name == wanted {
-				return name
-			}
-		}
-		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		if err != nil {
-			return ""
-		}
-		// The command name, in parentheses, may hold spaces; the parent is the second field after it.
-		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
-		if len(fields) < 2 {
-			return ""
-		}
-		parent, err := strconv.Atoi(fields[1])
-		if err != nil {
-			return ""
-		}
-		pid = parent
-	}
-	return ""
+func harnessName(comm string) string {
+	return strings.TrimSuffix(strings.TrimSpace(comm), ".exe")
 }
 
 func exists(path string) bool {

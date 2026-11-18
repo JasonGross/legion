@@ -1,5 +1,6 @@
 import { type FSWatcher, watch } from "node:fs"
 import { open } from "node:fs/promises"
+import { join } from "node:path"
 
 /**
  * What a Codex session's transcript says, one line at a time.
@@ -259,36 +260,39 @@ export function followTranscript(
   }
 }
 
-/** How much of a transcript's end `latestTurnCwd` reads: every turn writes a `turn_context` line,
- *  so the newest one is near the end, and a long session's file is never read whole. */
-const TURN_CWD_TAIL_BYTES = 512 * 1024
+/** How much `latestTurnCwd` reads at a time, walking back from the transcript's end. */
+const TURN_CWD_CHUNK_BYTES = 256 * 1024
 
 /**
  * The directory the session's newest turn ran in, from the last `turn_context` line of its
  * transcript (`payload.cwd`, which Codex writes at every turn, measured on 0.154.0): where a
- * `/cd` moved the session, and not the directory `SessionStart` named. Undefined when the file
- * cannot be read or its end holds no such line.
+ * `/cd` moved the session, and not the directory `SessionStart` named. It reads the file back
+ * from its end a chunk at a time until it meets such a line, so a long turn costs only the reads
+ * it takes to pass it. Undefined when the file cannot be read or holds no such line.
  */
 export async function latestTurnCwd(transcriptPath: string | null): Promise<string | undefined> {
   if (transcriptPath === null) return undefined
   let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
     handle = await open(transcriptPath, "r")
-    const { size } = await handle.stat()
-    const length = Math.min(size, TURN_CWD_TAIL_BYTES)
-    const buffer = Buffer.alloc(length)
-    await handle.read(buffer, 0, length, size - length)
-    const lines = buffer.toString("utf8").split("\n")
-    for (let index = lines.length - 1; index >= 0; index--) {
-      const line = lines[index] ?? ""
-      if (!line.includes('"turn_context"')) continue
-      try {
-        const parsed = JSON.parse(line) as { type?: unknown; payload?: { cwd?: unknown } }
-        if (parsed.type === "turn_context" && typeof parsed.payload?.cwd === "string") {
-          return parsed.payload.cwd
-        }
-      } catch {
-        // A line cut by the tail's start, or one being written.
+    let end = (await handle.stat()).size
+    // The bytes after the last newline read so far: the start of a line a later chunk completes.
+    let carry = Buffer.alloc(0)
+    while (end > 0) {
+      const length = Math.min(end, TURN_CWD_CHUNK_BYTES)
+      const chunk = Buffer.alloc(length)
+      await handle.read(chunk, 0, length, end - length)
+      end -= length
+      const joined = Buffer.concat([chunk, carry])
+      const firstNewline = end === 0 ? -1 : joined.indexOf(10)
+      const whole = joined
+        .subarray(firstNewline + 1)
+        .toString("utf8")
+        .split("\n")
+      carry = firstNewline < 0 ? Buffer.alloc(0) : joined.subarray(0, firstNewline)
+      for (let index = whole.length - 1; index >= 0; index--) {
+        const cwd = turnContextCwd(whole[index] ?? "")
+        if (cwd !== undefined) return cwd
       }
     }
     return undefined
@@ -297,4 +301,36 @@ export async function latestTurnCwd(transcriptPath: string | null): Promise<stri
   } finally {
     await handle?.close().catch(() => undefined)
   }
+}
+
+/** A transcript line's `turn_context` directory, or undefined for any other line. */
+function turnContextCwd(line: string): string | undefined {
+  if (!line.includes('"turn_context"')) return undefined
+  try {
+    const parsed = JSON.parse(line) as { type?: unknown; payload?: { cwd?: unknown } }
+    return parsed.type === "turn_context" && typeof parsed.payload?.cwd === "string"
+      ? parsed.payload.cwd
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The transcript of thread `threadId` under the Codex home `home`: Codex writes each session to
+ * `sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread id>.jsonl` (measured on 0.154.0). The newest
+ * such file when there are several; null when there is none.
+ */
+export async function findTranscript(home: string, threadId: string): Promise<string | null> {
+  if (!/^[0-9A-Za-z-]+$/.test(threadId)) return null
+  const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`)
+  const found: string[] = []
+  try {
+    for await (const file of glob.scan({ absolute: true, cwd: join(home, "sessions") })) {
+      found.push(file)
+    }
+  } catch {
+    return null
+  }
+  return found.sort().at(-1) ?? null
 }

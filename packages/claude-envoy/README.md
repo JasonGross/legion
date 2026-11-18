@@ -245,6 +245,17 @@ gives each plugin (`plugins/data/`), and adds to Codex's message queue through `
 it never touches Codex's configuration.
 Measured on Codex CLI 0.154.0.
 
+Which sessions get Envoy depends on how Codex runs them.
+A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`) registers with
+Envoy and gets everything below.
+Codex's shared app server runs several sessions in one process: `codex agents`, a plain `codex`
+that finds one running, and on 0.170.0 every terminal session, which runs in a background
+`codex app-server --managed-daemon`.
+The plugin cannot tell those sessions' Envoy traffic apart, so there it registers none of them:
+they get no Envoy messages and do not show on the Agents page, and the hook tells the model so.
+Their `dispatch` tool still works, as the session that calls it.
+An ephemeral fork (`/side`, `/btw`) is never registered either.
+
 - `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
   Codex expands no `${PLUGIN_ROOT}` in a server's arguments). Codex hands a plugin's server only
@@ -252,7 +263,11 @@ Measured on Codex CLI 0.154.0.
 - The session appears on the Agents page at its first prompt, not when the terminal opens: Codex
   gives the MCP server no session id, and its `SessionStart` hook, which runs at the first prompt
   and again after `/new`, records the id under the `codex` process both are children of
-  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`).
+  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`). Its `SessionEnd` hook marks the
+  record ended, so between `/new` and the next first prompt no message is answered as delivered
+  to a thread nobody has open; Envoy sends it again.
+- The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
+  call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
 - A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few
   seconds later. One that arrives during a turn waits in the plugin's inbox, and the
   `PostToolUse` hook (`hooks/codex-tool-hook.ts`) hands it to the model in the turn's next

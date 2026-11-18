@@ -71,11 +71,24 @@ export async function takenBy(
 }
 
 /**
+ * Takes the one line `name` out of `directory`'s waiting lines, where nothing took it yet: answers
+ * whether it was still waiting, so a caller refuses its write only when no taker can deliver it.
+ */
+export async function withdrawWaiting(directory: string, name: string): Promise<boolean> {
+  try {
+    await rm(join(directory, "waiting", name))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Removes the messages waiting in `directory` that no write of this process waits for: lines an
  * earlier server of the session left when it stopped. Each one's write never resolved, so the
  * Envoy frame it carried was never answered and Envoy sends it again to whoever binds the session
  * next; delivering the file as well would give the session the message twice (after `codex
- * resume`, for one). `keep` names the files this process still waits on.
+ * resume`, for one). `keep` names the files to leave.
  */
 export async function discardWaiting(
   directory: string,
@@ -105,8 +118,9 @@ export async function discardWaiting(
  * The most a `PostToolUse` hook hands Codex at once, in bytes of `inboxContext`'s text. Codex
  * caps a hook's `additionalContext` at 2,500 tokens by default (`hooks/src/output_spill.rs` in
  * 0.154.0); past it the model gets a preview and the rest goes to a file, while the message would
- * count as delivered whole. 8,000 bytes stays under that cap at four bytes a token, Codex's own
- * estimate, and a byte is never less than a token's share of a character.
+ * count as delivered whole. A token of a tokenizer like the one Codex's models use rarely covers
+ * fewer than about three and a half bytes of English, so 8,000 bytes leaves room under the cap for
+ * ordinary text. A message dense in rare characters can still run past it.
  */
 export const HOOK_CONTEXT_MAX_BYTES = 8_000
 
