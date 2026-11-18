@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -422,10 +423,6 @@ func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 
 func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
 	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
-}
-
-func (c *stubConn) RescueUnpushed(context.Context, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, errors.New("the stream stub does not run push checks")
 }
 
 func (c *stubConn) AgentSecretsEnrollment(context.Context, string) error {
@@ -879,13 +876,17 @@ func TestRealTmuxLifecycle(t *testing.T) {
 		}
 	}
 
-	// One --append-system-prompt word, its $(cat)s expanded by the pane's shell, the addressing
-	// text literal.
+	// One --append-system-prompt value, the claim's prompt file, and the text Oh My Pi takes from
+	// it the whole composed prompt, the addressing text literal.
 	report := readReport(t, r.workspace(spec.Issue), omp)
+	args, _ := report["systemPromptArgs"].([]any)
+	if promptFile := filepath.Join(r.stateDir, "secrets", string(spec.Claim)+"-system-prompt.md"); len(args) != 1 || args[0] != promptFile {
+		t.Errorf("OMP's --append-system-prompt values = %q, want exactly one: the claim's prompt file %s", args, promptFile)
+	}
 	prompts, _ := report["systemPrompt"].([]any)
 	want := "You are the stand-in tester.\n\n" + spec.Prompt.Addressing + "\n\n# Deployment instructions (demo)\n\nRun the checks."
 	if len(prompts) != 1 || prompts[0] != want {
-		t.Errorf("OMP's system prompt arguments = %q, want exactly one: %q", prompts, want)
+		t.Errorf("OMP's system prompt texts = %q, want exactly one: %q", prompts, want)
 	}
 	if report["mode"] != "rpc" || report["resumed"] != false {
 		t.Errorf("OMP ran with mode %v resumed %v, want rpc and fresh", report["mode"], report["resumed"])
@@ -1679,7 +1680,7 @@ func TestRealTmuxVerifiesAPaneByItsConfiguredHarnessesMarkers(t *testing.T) {
 // markedLauncher launches nothing; its marker is the string itself.
 type markedLauncher string
 
-func (m markedLauncher) Launch(runtime.SpawnSpec, Host) (string, []string, error) {
+func (m markedLauncher) Launch(runtime.SpawnSpec, Host, string) (string, []string, error) {
 	return "", nil, errors.New("markedLauncher launches nothing")
 }
 
@@ -1831,7 +1832,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// The stand-in answers `legion gh`'s reads of a command's help (`[<command>] --help`) with the
 	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
 	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
-	// hands gh unchecked, and the read the guard makes for every call that names a destination —
+	// hands gh unchecked, and the read the guard makes for every write that names a destination —
 	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
 	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
 	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the
@@ -1892,7 +1893,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		o.GH = realGH
 		o.Environ = append(slices.Clone(o.Environ), leakguard.CheckVar+"=", "XDG_CONFIG_HOME="+config)
 	})
-	if err := workerbin.Install(r.stateDir, r.legion); err != nil {
+	if err := workerbin.Install(r.stateDir, r.legion, os.Getenv("PATH")); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
 	}
 	decoy := t.TempDir()
@@ -1947,6 +1948,54 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.stateDir, "worker-bin")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the state directory holds a worker-bin (%v), want the launcher directory alone", err)
+	}
+}
+
+// A pane's git is its launcher directory's git wrapper, which runs `legion git --after`. In the
+// pane's own environment, which the agent's bash tool inherits, `command -v git` names that
+// wrapper, and a commit in a new repository carries the pane's role and the session that Oh My
+// Pi's shell adds (DISPATCH_HOST and DISPATCH_SESSION_ID). Install gets the pane's PATH, whose
+// first git is the tests' compiled git, so a host whose own PATH leads with the image's git
+// wrapper still gets a git wrapper here. The rig's spec gives the pane no git identity, so the
+// shell adds one.
+func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	git := fixturegit.CompiledGit(t)
+	spec := r.spec("LEGION-11", "LEGION-11", claim.RoleArchitect)
+	spec.Env["PATH"] = filepath.Dir(git) + ":" + spec.Env["PATH"]
+	if err := workerbin.Install(r.stateDir, r.legion, spec.Env["PATH"]); err != nil {
+		t.Fatalf("workerbin.Install: %v", err)
+	}
+	loc, err := r.rt.Spawn(ctx, spec)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	r.daemon.awaitReady(t, spec.BootToken)
+	env := procEnviron(t, descendant(t, panePid(t, loc), "omp"))
+	bin := filepath.Join(r.stateDir, "bin")
+	if want := bin + ":" + spec.Env["PATH"]; env["PATH"] != want || env["LEGION_ROLE"] != "architect" {
+		t.Fatalf("OMP's PATH = %q and LEGION_ROLE = %q, want %q and architect", env["PATH"], env["LEGION_ROLE"], want)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), append([]string{git}, fixturegit.InitWorkTree(repo, "")[1:]...)...)
+	session := "tmux-pane-" + randomHex(t, 4)
+	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
+	shell.Dir = repo
+	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "LEGION_ROLE"} {
+		shell.Env = append(shell.Env, name+"="+env[name])
+	}
+	shell.Env = append(shell.Env, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
+		"GIT_AUTHOR_NAME=Pane test", "GIT_AUTHOR_EMAIL=pane-test@example.invalid",
+		"GIT_COMMITTER_NAME=Pane test", "GIT_COMMITTER_EMAIL=pane-test@example.invalid")
+	out, err := shell.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git in the pane environment: %v: %s", err, out)
+	}
+	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	want := []string{filepath.Join(bin, "git"), "pane", "", "Omp-Session: " + session, "Legion-Role: architect"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the pane's git and its commit = %q, want %q", got, want)
 	}
 }
 

@@ -133,6 +133,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = "notifications.dispatch.issue."
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = "_"
+
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
@@ -306,6 +315,12 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20
 
+// MaxIssueAdvances bounds the `advances` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = 20
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -362,6 +377,23 @@ const ProjectNameMax = 80
 // reading of it cannot drift apart.
 const DocumentSchemaCloseCode = 4409
 const DocumentSchemaCloseReason = "DOC_SCHEMA"
+
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = 4425
+const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = 4412
+const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
@@ -452,12 +484,47 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return "notifications.dispatch.issue." + project + "." + issueKey + "." + typ
+}
+
+func AgentSubject(project, session string) string {
+	return "notifications.agent." + project + "." + session
+}
+
+func LegacyAgentSubject(session string) string {
+	return "notifications.agent." + session
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return "notifications.dispatch.issue." + issueKey + "." + typ
+}
+
+func RoleSubject(project, role string) string {
+	return "notifications.role." + project + "." + role
+}
+
+func LegionWakeSubject(token string) string {
+	return "notifications.legion." + token + ".wake"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

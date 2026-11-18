@@ -72,6 +72,18 @@ func entryStartRows(t *testing.T, pool *store.Pool, issue string) []entryStartRo
 	return found
 }
 
+// roleStartRows is every start row of issue entryStartRows reads that starts role, oldest first.
+func roleStartRows(t *testing.T, pool *store.Pool, issue string, role claim.Role) []entryStartRow {
+	t.Helper()
+	var found []entryStartRow
+	for _, start := range entryStartRows(t, pool, issue) {
+		if start.request.Role == role {
+			found = append(found, start)
+		}
+	}
+	return found
+}
+
 // rolePhaseRow is role's phases row of issue: the record the entry a phase is on and that entry's
 // task are read from (record.PhaseRow.Entry and EntryTask), and the zero row for a role the
 // record holds none of.
@@ -553,13 +565,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	rig.sup.deps.Conns.(*fake.Conns).Register(tester, fake.NewConn())
 	testerStarts := func() []entryStartRow {
 		t.Helper()
-		var found []entryStartRow
-		for _, start := range entryStartRows(t, rig.pool, rig.issue.Key) {
-			if start.request.Role == claim.RoleTester {
-				found = append(found, start)
-			}
-		}
-		return found
+		return roleStartRows(t, rig.pool, rig.issue.Key, claim.RoleTester)
 	}
 	testerStart := func(entry int64) entryStartRow {
 		t.Helper()
@@ -687,8 +693,11 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	sweeper := &workflowRuntime{pool: rig.pool, records: records, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
-	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
-	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (INFRA-3169).
+	// Production runs every sweep on the one hold mark workflowRuntime.run gives the sweep loop
+	// (store.ForConcurrentWorker(running)), reused from one sweep to the next. Each sweep here takes
+	// a fresh mark of its own, which the pool's guard reads the same way, since a sweep gives back
+	// every connection it took before it returns: either way the guard sees the sweep as in
+	// production, rather than refusing nothing on an unmarked context (INFRA-3169).
 	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
 	if starts := testerStarts(); len(starts) != 0 {
 		t.Fatalf("the sweep wrote the tester %+v while its worker works entry 1's task, want nothing: the pass passes over a claim whose pending delivery is still worked", starts)

@@ -139,8 +139,6 @@ export interface FakeDispatchServerOptions<Frame> extends FakeDispatchOptions {
    * reconnect's.
    */
   readonly live?: (socket: ServerWebSocket<undefined>, frame: Frame, nth: number) => void;
-  /** Runs after every recorded frame, whatever `live` did: what wakes a test waiting on one. */
-  readonly onFrame?: () => void;
 }
 
 /** A fake Dispatch listening on a loopback port, and what its client asked of it. */
@@ -191,7 +189,8 @@ export function startFakeDispatch<Frame = unknown>(
   };
 
   const server = Bun.serve({
-    // Not async: `server.upgrade` must run before this handler awaits anything.
+    // Not async, by choice: the handler upgrades at once. Bun 1.4.4 upgrades a request after an
+    // `await` in `fetch` as well, so nothing here depends on the handler being synchronous.
     fetch(request, srv) {
       const url = new URL(request.url);
       if (url.pathname !== LIVE_PATH) return read(request, url);
@@ -222,7 +221,6 @@ export function startFakeDispatch<Frame = unknown>(
         const nth = (counts.get(type) ?? 0) + 1;
         counts.set(type, nth);
         options.live?.(socket, frame, nth);
-        options.onFrame?.();
       },
     },
   });
@@ -497,14 +495,19 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
 }
 
 /**
- * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it.
- * Declared here structurally for the reason `FakeRecordClient` is: pi-shared depends on this
- * package.
+ * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoffRecord` is: its id,
+ * its version and `body`, the record's exact text, which names the head the phase's work was done
+ * against. Declared here structurally for the reason `FakeRecordClient` is: pi-shared depends on
+ * this package.
  */
-export type FakeLatestHandoff = (
-  issue: string,
-  word: string
-) => Promise<{ readonly id: string; readonly version: number }>;
+export interface FakeHandoffRecord {
+  readonly id: string;
+  readonly version: number;
+  readonly body: string;
+}
+
+/** The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it. */
+export type FakeLatestHandoff = (issue: string, word: string) => Promise<FakeHandoffRecord>;
 
 /** A Dispatch answering one thing for every phase's newest record, and every read it was asked. */
 export interface FakeHandoffDispatch {
@@ -515,9 +518,7 @@ export interface FakeHandoffDispatch {
 }
 
 /** A Dispatch answering `answer` for every phase's newest record, recording each read. */
-export function fakeLatestHandoff(
-  answer: () => Promise<{ readonly id: string; readonly version: number }>
-): FakeHandoffDispatch {
+export function fakeLatestHandoff(answer: () => Promise<FakeHandoffRecord>): FakeHandoffDispatch {
   const reads: string[] = [];
   return {
     latestHandoff: async (issue, word) => {

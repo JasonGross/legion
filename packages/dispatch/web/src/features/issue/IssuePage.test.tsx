@@ -44,6 +44,8 @@ const issue = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -1946,18 +1948,20 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
 
   try {
     expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
   } finally {

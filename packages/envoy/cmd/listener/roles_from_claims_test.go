@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,7 +27,7 @@ import (
 // the route's answer carries the same.
 func publishedSender(t *testing.T, state *listenerDeps, source, target string) *contracts.EnvelopeSender {
 	t.Helper()
-	probe, err := state.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	probe, err := state.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", target, err)
 	}
@@ -277,10 +278,10 @@ func requireRolesOrUnanswered(t *testing.T, what string, recorder *httptest.Resp
 	}
 }
 
-// A role claim view whose first scan nats.go's idle timer ended is not complete, so it says
-// nothing about who holds a role. The two session routes answer the bus-unavailable 503 with
-// Retry-After: 1, never the claim's holder listed with no roles, and a send still goes out, its
-// sender carrying no roles.
+// A role claim view whose first scan its idle wait ended (kvwatch.ScanIdleTimeout) is not
+// complete, so it says nothing about who holds a role. The two session routes answer the
+// bus-unavailable 503 with Retry-After: 1, never the claim's holder listed with no roles, and a
+// send still goes out, its sender carrying no roles.
 func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t *testing.T) {
 	const (
 		holder = "ses_timed_out_view_holder"
@@ -372,7 +373,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		put(fmt.Sprintf("filler-%04d", i), filler)
 	}
 	put("reviewer", holder)
-	if err := registry.Rewatch(client.Conn); err != nil {
+	if err := registry.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 

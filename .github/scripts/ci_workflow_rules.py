@@ -7,7 +7,11 @@ None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
 ci_filter_coverage.main()
-is what runs them, over the ci.yaml document it already loaded - the workspace rule over the
+is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
+alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
+workflow its jobs call, since a job's restore moves with its steps; the push-condition rule over
+ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
+others) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list main() hands it the same way, since what this module imports is
 the engine's names, never the data's, and the merge-group rule over the workflow directory, which
@@ -15,9 +19,8 @@ it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks
-main's ruleset requires, the three
-helpers that read an `if:` and the walk that says where each ci.yaml job's steps are (its own,
-and those of a local workflow it calls), and the path model's reader of a workflow's `on:`. main()
+main's ruleset requires, the reader of a job's `uses:` and the three
+helpers that read an `if:`, and the path model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
 a module Python has finished loading by then.
 """
@@ -25,11 +28,24 @@ a module Python has finished loading by then.
 import json
 import re
 from collections import defaultdict
+from functools import cache
 
-import yaml
 
-from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, conditions, script_lines,
-                                squash, step_holders, where_if)
+from ci_filter_coverage import (
+    CACHE_WORKFLOW,
+    REPO,
+    REQUIRED_CHECKS,
+    WORKFLOW,
+    RepositoryInputError,
+    called_workflows,
+    conditions,
+    error,
+    load_repository_yaml,
+    read_repository_text,
+    script_lines,
+    squash,
+    where_if,
+)
 from workflow_paths import events
 
 
@@ -51,27 +67,76 @@ PUSH_CONDITION = re.compile("|".join((comparison(r"github\.event_name", "'push'"
 PUSH_INSTEAD = (f"a cache that must be filled on a push to main belongs in {CACHE_WORKFLOW}, and a job that must "
                 f"run at main's tip is started by the workflow_dispatch "
                 f".github/workflows/main-bypass-check.yaml sends")
+# The one `on:` a workflow this rule reads beyond ci.yaml may declare, and the directory and the
+# two suffixes GitHub reads it in, which this rule and the merge-group rule at the foot of this
+# module both walk.
+WORKFLOW_CALL = "workflow_call"
+WORKFLOW_DIR = ".github/workflows"
+WORKFLOW_SUFFIXES = (".yaml", ".yml")
 
 
-def check_push_conditions(document: dict, problems: list) -> None:
-    """A job or a step of ci.yaml gated on a push event, or on github.ref being a branch ref, is
+@cache
+def directory_workflows() -> dict:
+    """Every workflow of this repository, as {its repository-relative path: the parsed document},
+    in path order. The two rules that walk the directory read this one answer: parsing each file
+    for each of them is a second read of every workflow in the repository."""
+    try:
+        paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
+    except Exception as exc:
+        raise RepositoryInputError(WORKFLOW_DIR, exc) from exc
+    return {f"{WORKFLOW_DIR}/{path.name}": load_repository_yaml(path) or {} for path in paths}
+
+
+def ci_only_documents(documents: dict) -> dict:
+    """Of the document set, the files whose every run is a run of ci.yaml: ci.yaml itself, and
+    each workflow it calls that no other workflow of this repository calls and whose `on:`
+    declares workflow_call and nothing else.
+
+    The rule below is about conditions that are dead because the workflow they are in has no
+    push trigger, and that reason carries to a called file only when ci.yaml is the only way
+    into it. A reusable workflow runs inside its caller's run and under its caller's event, so a
+    file two workflows call is live under each caller's events, and a file with a trigger of its
+    own has runs no caller starts at all. Both cases are in this repository today:
+    .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
+    to main, and docs-site.yaml:189 carries `github.event_name == 'push'` for exactly that
+    caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
+    .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
+    other case: nothing else calls them and they run on workflow_call alone, so a push condition
+    in one of them is as dead as it would be in ci.yaml."""
+    called_elsewhere: set = set()
+    for path, document in directory_workflows().items():
+        if path != WORKFLOW:
+            called_elsewhere |= set(called_workflows(document))
+    return {path: document for path, document in documents.items()
+            if path == WORKFLOW
+            or (path not in called_elsewhere and set(events(document)) == {WORKFLOW_CALL})}
+
+
+def check_push_conditions(documents: dict, problems: list) -> None:
+    """A job or a step of ci.yaml, or of a workflow only ci.yaml calls, gated on a push event,
+    or on github.ref being a branch ref, is
     dead: the workflow has no push trigger, and on its three events github.ref is a pull request's
     merge ref or the merge queue's own branch, never the ref such a condition names. Dead code
     that reads as live is worse than none - a step held back by `if: github.event_name ==
     'push'`, or a job by `if: github.ref == 'refs/heads/main'`, runs in no run of this workflow
     while its text says it runs on main - so a later pull
     request may not bring one back. Read off the if: text, one comparison at a time: a committer
-    who writes the same test as a function call is the review's to catch."""
-    for job_id, job in (document.get("jobs") or {}).items():
-        job = job or {}
-        refs = conditions(job)
-        for step, condition in refs:
-            for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition)):
-                where = where_if(job_id, step)
-                problems.append(f"::error file={WORKFLOW}::{where} has `if: {squash(condition)}`, which tests "
-                                f"`{found}`: {WORKFLOW} runs on a pull request, a merge group and a "
-                                f"workflow_dispatch, never on a push to main, so nothing that condition gates ever "
-                                f"runs; {PUSH_INSTEAD}")
+    who writes the same test as a function call is the review's to catch. Which files it reads,
+    and why it is not every file ci.yaml calls, is ci_only_documents above; each refusal names
+    the file the condition is in."""
+    for path, document in ci_only_documents(documents).items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            job = job or {}
+            refs = conditions(job)
+            for step, condition in refs:
+                for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition)):
+                    where = where_if(job_id, step)
+                    runs = (f"{WORKFLOW} runs" if path == WORKFLOW
+                            else f"{path} runs only as part of {WORKFLOW}, which runs")
+                    problems.append(error(path, f"{where} has `if: {squash(condition)}`, which tests "
+                                                f"`{found}`: {runs} on a pull request, a merge group and a "
+                                                f"workflow_dispatch, never on a push to main, so nothing that condition "
+                                                f"gates ever runs; {PUSH_INSTEAD}"))
 
 
 # ------------------------------------------------------- the re-run of a merge-group run
@@ -102,30 +167,34 @@ def check_rerun_guard(document: dict, problems: list) -> None:
     or, for a job whose `if:` admits merge_group alone, `github.run_attempt == '1'` by itself. A
     job named for a required check must hold neither, for the reason above: its skip is a passing
     required check. Read off the if: text, as check_push_conditions is: the same test written
-    another way is the review's to catch."""
+    another way is the review's to catch.
+
+    It reads ci.yaml alone, and no workflow ci.yaml calls: the `if:` this rule is about is the
+    caller job's, which stays in ci.yaml whatever file holds that job's steps, and a called
+    file's own jobs run or skip with the caller that started them."""
     wanted, found = RERUN_GUARD
     for job_id, job in (document.get("jobs") or {}).items():
         condition = str((job or {}).get("if", ""))
         if job_id in REQUIRED_CHECKS:
             if found.search(condition) or ATTEMPT_ONE.search(condition):
-                problems.append(f"::error file={WORKFLOW}::job {job_id} is named for a check main's ruleset "
-                                f"requires and its if: holds a term that skips it on a re-run attempt of a "
-                                f"merge-group run: a skipped job's check run is a passing required check, so that "
-                                f"attempt would merge on {job_id} concluded by nothing; drop the term and refuse "
-                                f"the attempt in a step of the job instead")
+                problems.append(error(WORKFLOW, f"job {job_id} is named for a check main's ruleset "
+                                                f"requires and its if: holds a term that skips it on a re-run attempt of a "
+                                                f"merge-group run: a skipped job's check run is a passing required check, so that "
+                                                f"attempt would merge on {job_id} concluded by nothing; drop the term and refuse "
+                                                f"the attempt in a step of the job instead"))
             continue
         if found.search(condition):
             continue
         if MERGE_GROUP_ONLY.search(condition):
             if not ATTEMPT_ONE.search(condition):
-                problems.append(f"::error file={WORKFLOW}::job {job_id} runs on merge_group and its if: has no "
-                                f"`github.run_attempt == '1'`, so a re-run attempt of a merge-group run runs it "
-                                f"again on a group that is tested already")
+                problems.append(error(WORKFLOW, f"job {job_id} runs on merge_group and its if: has no "
+                                                f"`github.run_attempt == '1'`, so a re-run attempt of a merge-group run runs it "
+                                                f"again on a group that is tested already"))
             continue
-        problems.append(f"::error file={WORKFLOW}::job {job_id}'s if: has no `{wanted}`, so a re-run attempt of a "
-                        f"merge-group run runs it again on a group that is tested already; `gh run rerun --failed` "
-                        f"does not re-run the `changes` that succeeded, so no job may lean on that job's skip for "
-                        f"this")
+        problems.append(error(WORKFLOW, f"job {job_id}'s if: has no `{wanted}`, so a re-run attempt of a "
+                                        f"merge-group run runs it again on a group that is tested already; `gh run rerun --failed` "
+                                        f"does not re-run the `changes` that succeeded, so no job may lean on that job's skip for "
+                                        f"this"))
 
 
 # ---------------------------------------------------------------- the cache round trip
@@ -154,25 +223,21 @@ def cache_steps(document: dict, action: str) -> list:
             for family, given in job_cache_steps(job or {}, action)]
 
 
-def restores_of(document: dict) -> dict:
+def restores_of(documents: dict) -> dict:
     """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
-    can be is where its job's steps are, which is the engine's step_holders walk: ci.yaml's own
-    jobs, and the jobs of each local workflow one of them calls - dispatch-browser.yaml's shard
-    and alone jobs restore the browser and apt archive families for ci.yaml's dispatch-browser
-    job - so a save paired against ci.yaml alone would read as a fill nobody wants. That walk
-    lists the jobs of a workflow once per caller, and those are the same jobs, so each is taken
-    once."""
-    restores, seen = defaultdict(list), set()
-    for _, path, job_id, _, job in step_holders(document, document.get("jobs") or {}, {}):
-        if (path, job_id) in seen:
-            continue
-        seen.add((path, job_id))
-        for family, given in job_cache_steps(job, "restore"):
+    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
+    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
+    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
+    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
+    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    restores = defaultdict(list)
+    for path, document in documents.items():
+        for job_id, family, given in cache_steps(document, "restore"):
             restores[family].append((f"job {job_id} of {path}", given))
     return restores
 
 
-def check_cache_round_trip(document: dict, problems: list) -> None:
+def check_cache_round_trip(documents: dict, problems: list) -> None:
     """ci-caches.yaml fills on a push to main the entries ci.yaml's run restores - its own jobs'
     restores, and those of the local workflows they call - so each family's save must carry
     exactly the key and the paths its restores name: a key or a path that drifts apart makes
@@ -185,42 +250,47 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
     `lookup-only: true` with no restore-keys: the question it asks is whether that exact key is
     already there, the entry it would download is read by nothing in this workflow, and a prefix
     hit would answer for an older key and skip the build that fills this one. A ci-caches.yaml
-    that is not in the repository saves nothing, and so has nothing to hold."""
+    that is not in the repository saves nothing, and so has nothing to hold.
+
+    The restores are collected from every document of the set, ci.yaml and each workflow its
+    jobs call, since a job that gives its steps to a called file takes its restore there with
+    them and the entry it reads is the same one; each refusal names the file the restore is in."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
-    caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
-    restores = restores_of(document)
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
+    restores = restores_of(documents)
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
-            problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves cache family {family}, which no "
-                            f"actions/cache/restore of {WORKFLOW} reads, nor one of a local workflow its jobs "
-                            f"call; this workflow exists to fill what {WORKFLOW} restores, so a family nothing "
-                            f"restores is a fill nobody reads: restore it there, or drop the save")
+            problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves cache family {family}, which no "
+                                                  f"actions/cache/restore of {WORKFLOW} or of a workflow it calls "
+                                                  f"reads; this workflow exists to fill what {WORKFLOW} restores, so a "
+                                                  f"family nothing restores is a fill nobody reads: restore it there, "
+                                                  f"or drop the save"))
             continue
         for restore_where, restored in restores[family]:
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:
-                problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} under key "
-                                f"`{key}`, but {restore_where} restores it under "
-                                f"`{restored_key}`: a restore whose key is not the save's "
-                                f"misses every time, and nothing fails - the job rebuilds from nothing instead")
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} under key "
+                                                      f"`{key}`, but {restore_where} restores it under "
+                                                      f"`{restored_key}`: a restore whose key is not the save's "
+                                                      f"misses every time, and nothing fails - the job rebuilds from nothing instead"))
             if paths != restored_paths:
-                problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} from "
-                                f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
-                                f"it into {', '.join(restored_paths) or '(no path)'}: the "
-                                f"entry then holds other directories than the job reads, and the job rebuilds what "
-                                f"the fill already built")
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} from "
+                                                      f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
+                                                      f"it into {', '.join(restored_paths) or '(no path)'}: the "
+                                                      f"entry then holds other directories than the job reads, and the job rebuilds what "
+                                                      f"the fill already built"))
     for job_id, family, given in cache_steps(caches, "restore"):
         if str(given.get("lookup-only", "")).strip().lower() != "true":
-            problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id}'s actions/cache/restore of family "
-                            f"{family} is not `lookup-only: true`: it asks only whether that exact key is already "
-                            f"there, and the entry a restore downloads is read by no step of this workflow")
+            problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
+                                                  f"{family} is not `lookup-only: true`: it asks only whether that exact key is already "
+                                                  f"there, and the entry a restore downloads is read by no step of this workflow"))
         if given.get("restore-keys") is not None:
-            problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id}'s actions/cache/restore of family "
-                            f"{family} has restore-keys: a prefix hit would answer for an older key, and the build "
-                            f"that fills this one would be skipped, leaving the key empty")
+            problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
+                                                  f"{family} has restore-keys: a prefix hit would answer for an older key, and the build "
+                                                  f"that fills this one would be skipped, leaving the key empty"))
 
 
 # ------------------------------------------- the race build that fills the race lane's cache
@@ -265,38 +335,38 @@ def check_race_fill_packages(packages: list, problems: list) -> None:
     and nothing here imports it - the engine's names are all this module takes."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
-    caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     wanted = [f"./{package}/" for package in packages]
     builds = race_builds(caches)
     if not builds:
-        problems.append(f"::error file={CACHE_WORKFLOW}::no step of this workflow runs a `go test` with -race, so "
-                        f"nothing fills the build cache {WORKFLOW}'s race step restores and that step links "
-                        f"{', '.join(wanted) or '(no package)'} from nothing on every run; put the race build "
-                        f"back, or drop this rule with the lane it holds")
+        problems.append(error(CACHE_WORKFLOW, f"no step of this workflow runs a `go test` with -race, so "
+                                              f"nothing fills the build cache {WORKFLOW}'s race step restores and that step links "
+                                              f"{', '.join(wanted) or '(no package)'} from nothing on every run; put the race build "
+                                              f"back, or drop this rule with the lane it holds"))
         return
     for job_id, line, named in builds:
         where = f"job {job_id}'s race build"
         extra = [package for package in named if package not in wanted]
         missing = [package for package in wanted if package not in named]
         for package in extra:
-            problems.append(f"::error file={CACHE_WORKFLOW}::{where} names {package}, which {TABLE}'s {RACE_LIST} "
-                            f"does not ({', '.join(named)} against {', '.join(wanted) or '(no package)'}): this "
-                            f"build fills the cache {WORKFLOW}'s race step restores, so it compiles a race binary "
-                            f"no job of {WORKFLOW} restores, and nothing fails; either the command follows the "
-                            f"list, or the package joins {RACE_LIST}, the one place the lane is named - "
-                            f"{WORKFLOW}'s two race steps follow it already")
+            problems.append(error(CACHE_WORKFLOW, f"{where} names {package}, which {TABLE}'s {RACE_LIST} "
+                                                  f"does not ({', '.join(named)} against {', '.join(wanted) or '(no package)'}): this "
+                                                  f"build fills the cache {WORKFLOW}'s race step restores, so it compiles a race binary "
+                                                  f"no job of {WORKFLOW} restores, and nothing fails; either the command follows the "
+                                                  f"list, or the package joins {RACE_LIST}, the one place the lane is named - "
+                                                  f"{WORKFLOW}'s two race steps follow it already"))
         for package in missing:
-            problems.append(f"::error file={CACHE_WORKFLOW}::{TABLE}'s {RACE_LIST} names {package}, which {where} "
-                            f"does not ({', '.join(wanted)} against {', '.join(named) or '(no package)'}): the "
-                            f"fill then misses a race binary {WORKFLOW}'s race step links from nothing on every "
-                            f"run, and nothing fails; either the command follows the list, or the package leaves "
-                            f"{RACE_LIST}, the one place the lane is named - {WORKFLOW}'s two race steps follow "
-                            f"it already")
+            problems.append(error(CACHE_WORKFLOW, f"{TABLE}'s {RACE_LIST} names {package}, which {where} "
+                                                  f"does not ({', '.join(wanted)} against {', '.join(named) or '(no package)'}): the "
+                                                  f"fill then misses a race binary {WORKFLOW}'s race step links from nothing on every "
+                                                  f"run, and nothing fails; either the command follows the list, or the package leaves "
+                                                  f"{RACE_LIST}, the one place the lane is named - {WORKFLOW}'s two race steps follow "
+                                                  f"it already"))
         if named != wanted and not extra and not missing:
-            problems.append(f"::error file={CACHE_WORKFLOW}::{where} names {', '.join(named)}, where {TABLE}'s "
-                            f"{RACE_LIST} has {', '.join(wanted)}: the same packages in another order, so the "
-                            f"fill is right and only a reader who sorts both lists can see that it is; spell the "
-                            f"command as the list reads, so the next change to either shows as a difference")
+            problems.append(error(CACHE_WORKFLOW, f"{where} names {', '.join(named)}, where {TABLE}'s "
+                                                  f"{RACE_LIST} has {', '.join(wanted)}: the same packages in another order, so the "
+                                                  f"fill is right and only a reader who sorts both lists can see that it is; spell the "
+                                                  f"command as the list reads, so the next change to either shows as a difference"))
 
 
 # ---------------------------------------------------------------- the workspaces and the table
@@ -317,7 +387,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     already, and because nothing here imports ci_job_reads: the engine's names are all this
     module takes.
 
-    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:103-111 reads it,
+    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:101-109 reads it,
     at every shape, since the two checks are about the same list and a list one of them cannot
     read is not a list the other may pass over: a root manifest that is missing or is not valid
     JSON, and a `workspaces` that is not a list or holds anything but non-empty strings, are
@@ -330,40 +400,37 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     workspace to bun, and a rule that stripped it on one side alone would report the table as
     missing a workspace it names in the other spelling."""
     if not (REPO / MANIFEST).is_file():
-        problems.append(f"::error file={MANIFEST}::the root manifest is missing, so {TABLE}'s WORKSPACES is held to "
-                        f"nothing while every read it gives each Bun job names a manifest this tree does not have")
+        problems.append(error(MANIFEST, f"the root manifest is missing, so {TABLE}'s WORKSPACES is held to "
+                                        f"nothing while every read it gives each Bun job names a manifest this tree does not have"))
         return
     try:
-        manifest = json.loads((REPO / MANIFEST).read_text())
-    except json.JSONDecodeError as error:
-        problems.append(f"::error file={MANIFEST}::the root manifest is not valid JSON ({error.msg} at line "
-                        f"{error.lineno}), so its workspaces cannot be held to {TABLE}'s WORKSPACES")
+        manifest = json.loads(read_repository_text(REPO / MANIFEST))
+    except json.JSONDecodeError as json_error:
+        problems.append(error(MANIFEST, f"the root manifest is not valid JSON ({json_error.msg} at line "
+                                        f"{json_error.lineno}), so its workspaces cannot be held to {TABLE}'s WORKSPACES"))
         return
     found = manifest.get("workspaces") if isinstance(manifest, dict) else None
     if not isinstance(found, list) or not all(isinstance(w, str) and w for w in found):
-        problems.append(f"::error file={MANIFEST}::workspaces must be an array of workspace paths for "
-                        f"{TABLE}'s WORKSPACES to be held to it")
+        problems.append(error(MANIFEST, "workspaces must be an array of workspace paths for "
+                                        f"{TABLE}'s WORKSPACES to be held to it"))
         return
     declared = [workspace.removesuffix("/") for workspace in found]
     table = [workspace.removesuffix("/") for workspace in workspaces]
     for workspace in declared:
         if workspace in table:
             continue
-        problems.append(f"::error file={MANIFEST}::workspaces names {workspace}, which {TABLE}'s WORKSPACES does "
-                        f"not: a frozen `bun install` reads that manifest in every Bun job, so until the table "
-                        f"names it no filter has to select it, and a change to the package starts no job at all")
+        problems.append(error(MANIFEST, f"workspaces names {workspace}, which {TABLE}'s WORKSPACES does "
+                                        f"not: a frozen `bun install` reads that manifest in every Bun job, so until the table "
+                                        f"names it no filter has to select it, and a change to the package starts no job at all"))
     for workspace in table:
         if workspace in declared:
             continue
-        problems.append(f"::error file={TABLE}::WORKSPACES names {workspace}, which the root manifest's workspaces "
-                        f"does not: every Bun job then declares a read of {workspace}/package.json that no install "
-                        f"of this repository reads")
+        problems.append(error(TABLE, f"WORKSPACES names {workspace}, which the root manifest's workspaces "
+                                     f"does not: every Bun job then declares a read of {workspace}/package.json that no install "
+                                     f"of this repository reads"))
 
 
 # ------------------------------------------------- the one workflow a merge group runs
-# The directory every workflow of this repository is in, and the two suffixes GitHub reads there.
-WORKFLOW_DIR = ".github/workflows"
-WORKFLOW_SUFFIXES = (".yaml", ".yml")
 MERGE_GROUP = "merge_group"
 
 
@@ -382,15 +449,14 @@ def check_one_merge_group_workflow(problems: list) -> None:
     merge_group workflow puts the early POST back in another suite, and nothing in ci.yaml would
     say so: the workflow that broke it is the new file. So the rule is about every other
     workflow, and names the file it found."""
-    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
-        name = f"{WORKFLOW_DIR}/{path.name}"
-        if name == WORKFLOW or MERGE_GROUP not in events(yaml.safe_load(path.read_text()) or {}):
+    for name, document in directory_workflows().items():
+        if name == WORKFLOW or MERGE_GROUP not in events(document):
             continue
-        problems.append(f"::error file={name}::{name} runs on {MERGE_GROUP}, which only {WORKFLOW} may: "
-                        f"ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's own "
-                        f"result decides, and a POSTed check run joins the Actions App's first check suite at that "
-                        f"commit rather than the posting run's, so a second {MERGE_GROUP} workflow can hold that "
-                        f"first suite and the queue never reads the POST - measured on pull request #2847, which "
-                        f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
-                        f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
-                        f"move it into {WORKFLOW}")
+        problems.append(error(name, f"{name} runs on {MERGE_GROUP}, which only {WORKFLOW} may: "
+                                    f"ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's own "
+                                    f"result decides, and a POSTed check run joins the Actions App's first check suite at that "
+                                    f"commit rather than the posting run's, so a second {MERGE_GROUP} workflow can hold that "
+                                    f"first suite and the queue never reads the POST - measured on pull request #2847, which "
+                                    f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
+                                    f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
+                                    f"move it into {WORKFLOW}"))

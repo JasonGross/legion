@@ -233,7 +233,7 @@ func (p *recordingPublisher) PublishAsync(item contracts.Envelope) <-chan error 
 // stream's acknowledgement of the copy it stored answers it, recording the envelope, whose topic
 // is still the role's.
 func (p *recordingPublisher) Request(subject string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
-	if subject != contracts.AgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+	if subject != contracts.LegacyAgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 		return answered(fmt.Errorf("a Request to %q with dedupe key %q is no role forward to %s", subject, item.DedupeKey, roleHolder))
 	}
 	return answered(p.Publish(item))
@@ -1813,6 +1813,38 @@ func TestRunMarksIssueLessTargetedMessagesPublishedWithoutRepublishing(t *testin
 	})
 	if items := publisher.all(); len(items) != 0 {
 		t.Fatalf("issue-less messages published %d NATS envelopes, want 0: %#v", len(items), items)
+	}
+}
+
+// A priority's write appends an event with no owner (api/priorities.go priorityEvent): the outbox
+// finds no destination for it, sends nothing, and settles it published.
+func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	created := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated},
+	})
+	deleted := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityDeleted},
+	})
+	for _, event := range []model.Event{created, deleted} {
+		if event.Notify || event.IssueKey != nil || event.ArtifactID != nil || event.ProjectKey != nil {
+			t.Fatalf("priority event %d = notify %t owner %v/%v/%v, want no owner and no wake",
+				event.ID, event.Notify, event.IssueKey, event.ArtifactID, event.ProjectKey)
+		}
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "ownerless priority event publication settlement", func() bool {
+		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
+	})
+	if items := publisher.all(); len(items) != 0 {
+		t.Fatalf("priority events published %d NATS envelopes, want 0: %#v", len(items), items)
 	}
 }
 

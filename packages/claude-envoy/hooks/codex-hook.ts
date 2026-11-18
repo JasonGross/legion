@@ -79,12 +79,9 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
   process.stdout.write(`${CODEX_DISPATCH_NOTE}\n\n`)
   try {
-    const snapshot = await new DispatchClient(
-      dispatch.url,
-      dispatch.credential,
-      fetch,
-      AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
-    ).openAsks(input.session_id)
+    const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
+      signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+    }).openAsks(input.session_id)
     process.stdout.write(
       `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
     )

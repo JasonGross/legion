@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# The live proof that a role process is launched with the pod memory rule in its own system
-# prompt. The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL
-# and a real nats-server, and two real `omp --mode rpc` panes run under it — the real `legion
-# worker-shim`, this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and
-# @sjawhar/pi-legion in an Oh My Pi profile of the run's own — each answered by an HTTP model
-# stand-in of the driver's own. The two panes are the two roles of one tree: its root architect,
-# and the planner of the same issue, which stands in planning.
+# The live proof that a role process is launched with the rules its own system prompt carries: the
+# pod memory rule, which every phase worker and every architect is given, the planner's own rule
+# that its completion reports work already done, at the `head` its handoff names, once that
+# handoff is recorded, and the sub-architect's own prompt, which a child's architect is given. The
+# whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a real
+# nats-server, and three real `omp --mode rpc` panes run under it — the real `legion worker-shim`,
+# this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh
+# My Pi profile of the run's own — each answered by an HTTP model stand-in of the driver's own.
+# The three panes are three roles of one tree: its root architect, the planner of the same issue,
+# which stands in planning, and the architect of a child of the root, which stands in planning too.
 #
-# Once both panes have registered and reported ready, the driver reads each pane's own Oh My Pi
-# command line from /proc/<pid>/cmdline and takes the word after `--append-system-prompt`. The pid
-# the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
-# the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
-# holds the phase worker's eight sentences of the rule and the root architect's six in that word,
-# and names the role, the pid and the sentence for any it cannot find. That command line is the
-# only place it reads: the composer, the role prompt files below the state directory and the
+# Once every pane has registered and reported ready, the driver reads each pane's own Oh My Pi
+# command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
+# of the prompt file, and reads that file. The pid the claim's locator carries is the
+# `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's eight
+# sentences of the pod memory rule and every architect's six in that prompt; the planner's three
+# parts of the completion-after-work rule — the `head` its handoff body names, the clause that
+# carries that head to the daemon, and the sentence that records the `plan` handoff with
+# `dispatch handoff-write` and then reports completion — in the planner's; and, in the child's
+# architect's, the sub-architect's heading (`# Legion Sub-Architect`) and not the root's, and its
+# addressing clause naming the root's architect as the architect above it. It names the role,
+# the pid and the text for any it cannot find. That command line and the file it names are the
+# only places it reads: the composer, the role prompt files below the state directory and the
 # recorded launch specification all hold that text before a process took it, and the unit tests
 # already read it there (packages/daemon/internal/prompts/prompts_test.go and
 # packages/daemon/internal/prompts/roles_test.go). The driver is
@@ -22,12 +31,13 @@
 # starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# The whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0)
-# with a warm Go build cache, the driver 41 s and 43 s of them; the same pod's first run took
-# 179 s, which is that cache cold and the pinned nats-server installed by the run itself. The
-# proof waits on no clock of its own. Its one wait is the two panes starting Oh My Pi, loading the
-# two plugins and reporting ready, which took 10 s of the driver's time in each of the three runs;
-# the command line it reads is on each process from the moment that process began.
+# Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion
+# worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s
+# and 16 s into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the
+# pinned nats-server installed by the run itself. Each of these figures is from a Legion worker
+# pod, which runs under gVisor. The proof waits on no clock of its own. Its one wait is the panes
+# starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is
+# on each process from the moment that process began.
 #
 # Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \
@@ -66,5 +76,5 @@ fi
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
 live_daemon_proof 'role prompt rule' role-prompt-rule \
-  TestEveryRoleIsLaunchedWithThePodMemoryRuleLive \
+  TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive \
   "${ROLE_PROMPT_RULE_EVIDENCE_DIR:-}"

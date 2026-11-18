@@ -1,6 +1,6 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -74,6 +74,14 @@ function renderRail({
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
+    // The rail reads the two fault counts on every page; this deployment has written no
+    // priority, so its entry carries no number and these rows are about the agents alone.
+    spyOn(api, "listPriorities").mockResolvedValue({
+      empty: "No priority is live now, so the list is empty.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    }),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue(listed),
@@ -175,8 +183,10 @@ test("each row says what its live view is doing", async () => {
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
   const views = liveViewsOf(queryClient);
-  views.show(PLANNER);
-  views.show(REVIEWER);
+  act(() => {
+    views.show(PLANNER);
+    views.show(REVIEWER);
+  });
   await waitFor(() => expect(rowTexts()[1]).toBe("Reviewerlive"));
   expect(rowTexts()[0]).toBe("Planner2live 30s");
   expect(rowTexts()[2]).toBe("Testerasleep");

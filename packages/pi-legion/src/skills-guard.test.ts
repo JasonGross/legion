@@ -510,9 +510,10 @@ test("every prompt and agent that may write says to make its own scratch and del
 // pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
 // and the pins below hold what only the prompt carries and the skill points at. The carve-out
 // that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The three
+// second wording, held across the pr-body reference and the implementer's prompt part. The
 // members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently. This shows the text ships, never that a role follows it.
+// reads loses its member silently, and so is the reviewer's rule that it pushes nothing, which
+// keeps the step from falling to it. This shows the text ships, never that a role follows it.
 test("the worker skill tells a role to read the pull request's head after its own push", () => {
   const sharedWithTheWorkerPrompt = [
     "skills/legion-worker/SKILL.md",
@@ -525,7 +526,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "an empty one when your work is complete",
     "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-    "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
+    "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];
@@ -548,8 +549,8 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
-  countedOncePerFile("the empty commit that carries it there", [
+  countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
@@ -754,6 +755,6 @@ test("the architect shows a person the surface before it asks them to approve th
     "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
   );
   expect(gate).toContain(
-    "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
+    "The surfaces this tree's children build are the root architect's. Their pictures go in the root spec. A sub-architect that finds a surface the root spec never drew tells the architect above it, and each architect above sends it up the tree to the root architect."
   );
 });

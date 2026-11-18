@@ -111,6 +111,8 @@ export const realStackReasons: Record<string, string> = {
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
+  "delivery-queued.e2e.ts":
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
@@ -119,6 +121,8 @@ export const realStackReasons: Record<string, string> = {
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
+  "download-names.e2e.ts":
+    "the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
@@ -164,6 +168,10 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-look.e2e.ts":
+    "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
+  "issue-page-switch.e2e.ts":
+    "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue.e2e.ts":
@@ -219,6 +227,8 @@ export const realStackReasons: Record<string, string> = {
     "the trap is asserted while a send is out; asserts the project document's live editor content",
   "picture-link-click.e2e.ts": "the link is clicked inside the live document editor",
   "pictures.e2e.ts": "pastes and uploads, with the live editor and stored markdown read back",
+  "pinned-review-events.e2e.ts":
+    "the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state",
   "pipeline.e2e.ts": "`sql`-seeded pipeline state the server aggregates",
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",
@@ -226,6 +236,8 @@ export const realStackReasons: Record<string, string> = {
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
+  "priorities.e2e.ts":
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
   "project-default-assignee.e2e.ts":

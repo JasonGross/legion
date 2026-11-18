@@ -2519,10 +2519,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(recorded(worker).at(-1)).toEqual({ state: "closed", count: 0, reported: false });
     });
 
-    // INFRA-484: the update task arrives as the daemon's own prompt, which opens the phase as an
-    // assignment does, and `ready_for_update` closes no phase. The turn the worker answers in
-    // must still end: a continuation would do work the pod's replacement throws away, and the
-    // daemon, which waits for a turn to end before it replaces anything, would see none.
+    // INFRA-484: the update message reaches the worker while its phase is open, and
+    // `ready_for_update` closes no phase. The turn the worker answers in must still end: a
+    // continuation would do work the pod's replacement throws away, and before the round's bound
+    // the daemon waits for every turn to end before it replaces the pod.
     test("a ready_for_update answer earns no continuation: the answering turn ends, with the phase still open", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -5851,7 +5851,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // registered for a channel the list does not name before it restores the rest. So a resumed
   // controller hears the list it is launched with and no other: a channel taken off the project,
   // or given to another project's controller, is not heard here again. Any other controller
-  // hears no Slack channel at all, whatever it inherited: only the daemon's can reply in Slack.
+  // hears no Slack channel at all, whatever it inherited: the daemon names a project's channels to
+  // its own controller alone.
   describe("the project's Slack channels", () => {
     const mention = (channel: string) => `notifications.slack.*.${channel}.mention`;
     /** The Slack topics among `topics`, in the order they were given in. */

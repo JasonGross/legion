@@ -410,7 +410,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
               )
               return active === null
                 ? undefined
-                : new DispatchClient(active.url, active.credential, fetch, AbortSignal.timeout(ms))
+                : new DispatchClient(active.url, active.credential, fetch, {
+                    signal: AbortSignal.timeout(ms),
+                  })
             },
             expect: (text, messageId) => stream?.expect(text, messageId),
             reply: (target, result) => postDispatchReply(id, configFile, target, result),

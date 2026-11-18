@@ -11,16 +11,16 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 ## The merge, step by step
 
 1. Verify tester and reviewer cycles completed and retro completed, then read the pull request: `gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus,autoMergeRequest`. Its `headRefOid` is the head you merge, and every step below names that same sha; its `title` is the subject you merge under. Every handoff is a record on the Dispatch issue, never a commit, so the merge carries no handoff onto the default branch and there is nothing on the head to read for one. A non-null `autoMergeRequest` is auto-merge already armed on the pull request, which a release before this one may have left there: turn it off with `gh pr merge <n> --disable-auto` before you go on, because GitHub checks the head auto-merge was armed at only while it is being armed and never again when it merges, so an armed pull request whose head moves afterwards merges code no merger ever read.
-2. Read, in one command, the repository's own squash-message setting and whether the base branch has a merge queue, with the base escaped in the same command that reads it (a raw `#` or `%` reads another branch):
+2. Read, in one command, the repository's default branch, whether it allows merge commits, its own squash-message setting and whether the base branch has a merge queue, with the base escaped in the same command that reads it (a raw `#` or `%` reads another branch):
 
    ```bash
    base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
      base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
-     gh api "repos/<o>/<r>" --jq '[.squash_merge_commit_title, .squash_merge_commit_message] | @tsv' && \
+     gh api "repos/<o>/<r>" --jq '[.default_branch, .allow_merge_commit, .squash_merge_commit_title, .squash_merge_commit_message] | @tsv' && \
      gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[].type'
    ```
 
-   `squash_merge_commit_message` of `COMMIT_MESSAGES` is GitHub's default, and it joins every commit message of the pull request into the squash commit: this tree's `Dispatch:` keys and its `Omp-Session:` trailers would land on the default branch, where they are no part of the change's history. Step 3 passes the message itself and never lets GitHub write it; step 4 cannot, which is why the setting is read here.
+   `squash_merge_commit_message` of `COMMIT_MESSAGES` is GitHub's default, and it joins every commit message of the pull request into the squash commit: this tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:` trailers would land on the default branch, where they are no part of the change's history. Step 3 passes the message itself and never lets GitHub write it; step 4 cannot, which is why the setting is read here.
 3. Merge at that head, writing the message yourself:
 
    ```bash
@@ -28,6 +28,8 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    ```
 
    GitHub refuses the merge when the head has moved, which is the point of naming it. `--subject` is the pull request's own title and number, the line GitHub's `PR_TITLE` setting would write, and `--body ''` is the empty body that keeps every commit message of the branch off the default branch; pass both on every merge, whatever the repository's setting says, since the setting can change under you.
+
+   A squash into a base that is not the default branch leaves each open pull request built on the merged branch a conflict of history alone, because the commits it builds on are not in the base after the squash. So into such a base, where `allow_merge_commit` is `true` and the rules step 2 read hold no `required_linear_history`, pass `--merge` in place of `--squash`, with the same head, subject and body. Otherwise squash, and once GitHub reports the merge, tell the architect with `envoy_publish` to its encoded role token which open pull requests of the tree build on the merged branch: those whose base is that branch, and those on the same base whose head holds the head you merged (`gh api repos/<o>/<r>/compare/<head>...<their head> --jq .status` answers `ahead` or `identical`). Each one whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to `implementing` by the daemon's own move, with a task that names the base. The implementer of one whose issue is still in `implementing` merges the base forward once GitHub reports its pull request `CONFLICTING`; the architect you told tells each such implementer whose issue it owns to expect it. Into the default branch, squash as above.
 4. A `merge_queue` rule among the base branch's rules is a base you enqueue the pull request on instead of merging it, with the head you read as `expectedHeadOid`, because `gh pr merge` on such a base turns auto-merge on while a required check is pending, which arms the pull request rather than queueing it.
 
    ```bash
@@ -36,8 +38,41 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    ```
 
    `enqueuePullRequest` takes no message: GitHub writes the squash commit under the repository's own setting, so on a merge-queue base whose `squash_merge_commit_message` reads `COMMIT_MESSAGES` the queue would put this branch's commit messages on the default branch and nothing you pass can stop it. Do not enqueue it and do not complete. Tell the architect with `envoy_publish` to its encoded role token, naming the pull request, the head, the setting's value, and that only a person can change the repository's setting to `PR_BODY` or `BLANK`; the merge waits for that answer.
-5. On a merge-queue base, watch the pull request with `gh pr view <n> --json state,mergedAt,isInMergeQueue,mergeStateStatus` until GitHub merges it or takes it out of the queue, and act on a removal: a queue that took the head out because its own `merge_group` checks failed is work to fix, so send the issue back; a person's dequeue is that person's decision, which you report. A removal is never a merge.
-6. When a merge fails, the decision is yours, and GitHub's own answer is the fact you decide on: quote it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change (a conflict with the base, a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting or an App permission only a person can change, naming the pull request, the head and GitHub's refusal. A merge you cannot make is never a rule to work around.
+5. On a merge-queue base, watch the pull request with this command:
+
+   ```bash
+   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedAt isInMergeQueue mergeStateStatus headRefOid mergeQueueEntry{state position}}}}'
+   ```
+
+   Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
+
+   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. While the root's design gate is closed, the daemon does not start your pod for the message. The message then waits until the gate opens. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
+
+   ```bash
+   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{__typename ... on AddedToMergeQueueEvent{createdAt actor{login}} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
+   ```
+
+   An entry is an `AddedToMergeQueueEvent` node. A removal is a `RemovedFromMergeQueueEvent` node. The newest entry is the last `AddedToMergeQueueEvent` node. Act only on the last removal that comes after the newest entry. A removal before the newest entry is of an earlier turn in the queue.
+
+   If the list has no entry, or no removal comes after the newest entry, GitHub's timeline is behind the event. Run the command again about every ten seconds, for about one minute in all. If there is still no removal after the newest entry, run the watch command. Then act on its answer:
+
+   - `state` is `MERGED`: the pull request needs nothing more. The daemon closes the issue on the merge.
+   - `isInMergeQueue` is `true`: the pull request is in the queue again. Continue the watch.
+   - Any other answer: tell the architect with `envoy_publish` to its encoded role token. Quote the output of both commands.
+
+   Act on the `reason` of the last removal after the newest entry:
+
+   - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
+   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
+   - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. If you already used it, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
+     - `DIRTY`: the head conflicts with the base. Send the issue back with `request_backward_move` (step 6).
+     - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
+     - Any other state: the head conflicted with an entry ahead of it in the queue. Enqueue the same head one more time (step 4). Record that enqueue in a `dispatch comment` on the issue.
+   - `manual`: if the `actor` is your own App and you removed the pull request because the design gate closed, the removal is your own act. Follow "A closed design gate" below. The timeline gives an App's login without the `[bot]` at its end, so compare the `actor` login with your App's login with `[bot]` taken off. Any other `manual` removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
+   - Any other reason: tell the architect with `envoy_publish` to its encoded role token. Quote the reason.
+
+   A removal is never a merge.
+6. When a merge fails, the decision is yours, and GitHub's message alone does not name the cause: a ruleset that held a merge has been answered with "Auto merge is not allowed for this repository". So before you decide, read the pull request's merge state and review decision (`gh pr view <n> --json mergeStateStatus,reviewDecision`) and the base's rules that apply (the rules read of step 2, with `--jq '.[] | {type, parameters}'`), and name the blocker those show, with GitHub's message quoted beside it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change (a conflict with the base, a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting, a rule or an App permission only a person can change, naming the pull request, the head, the blocker and GitHub's refusal. A merge you cannot make is never a rule to work around.
 7. Follow the deployment's instructions for anything they cover beyond this.
 
 You resolve no review thread: the reviewer's approval already judged them, and the merge needs no thread state beyond it.
@@ -56,3 +91,5 @@ Then wait. The message reading `The design gate of <tree> opened: a person appro
 ## Completion
 
 Do not write a handoff: merger is not a file-backed phase. The commit the daemon records for your completion is the branch head. Your `summary` is the ordinary two sentences for the architect, and it names the merge: the pull request, the head you merged and the merge commit GitHub recorded, or, where you merged nothing, which step stopped you and whom you told.
+
+Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.

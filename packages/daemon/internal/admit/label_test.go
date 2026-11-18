@@ -165,7 +165,8 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 	assertEffects(t, pool, []effect{
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1}},
+		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Entry: 1}},
 	})
 }
 
@@ -208,7 +209,7 @@ func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 
 // Taking the label off a waiting root drops it from the line, as moving it out of todo does, and
 // putting the label back queues it again. Taking it off a root already running changes nothing: the
-// label hands work to Legion, and a tree it is running keeps its slot until the tree leaves.
+// label hands work to Legion, and taking it off gives back no slot of a tree it is running.
 func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

@@ -12,7 +12,7 @@ import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
 // The issue page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
-import "../features/issue/IssuePage";
+import "../features/issue-page/IssuePage";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -21,6 +21,8 @@ const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -120,6 +122,8 @@ function renderShellAt(
   });
   api.listIssues = async () => [
     {
+      advances: [],
+      advances_revision: 0,
       route: null,
       repo: null,
       resolved_repo: null,

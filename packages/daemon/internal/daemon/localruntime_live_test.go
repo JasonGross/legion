@@ -24,18 +24,16 @@
 //     issue and its pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
 //     the tmux runtime's own `<pid>:<start ticks>`, read from /proc, so a reissued pid is told from
 //     the process the locator recorded exactly as it is there.
-//   - The inner Oh My Pi command is an argv rather than a shell fragment. A pane's shell expands
-//     `$(cat <role prompt files>)` inside one `--append-system-prompt` word (omplaunch's
-//     SystemPromptArgument); with no shell, promptArgument reads the same files and composes the
-//     same word.
+//   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
+//     prompt file as a pane's does: the prompt composed (runtime.ComposePrompt) and written to
+//     runtime.WriteSystemPrompt under the claim's name, and that path as the one `--append-system-prompt` value.
 //   - No GitHub credential is minted and no `gh` bundle is written: the pane of this proof pushes
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
 //     is the same pane a runtime with no GitHubCredential function opens.
 //   - ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
 //     repository on its host; this runtime makes the claim's working directory itself.
-//   - PodDrift, ReplacePod, RescueUnpushed and CleanupTree hold nothing per place or per tree, so
-//     each answers as a process-only runtime answers: no drift, nothing to replace, nothing to
-//     rescue, nothing to delete.
+//   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
+//     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
 // group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
@@ -102,6 +100,10 @@ type localRuntime struct {
 	daemonURL string
 	envoyURL  string
 	natsURLs  []string
+	// dispatchURL and dispatchTokenFile are the Dispatch every pane is told as DISPATCH_URL and
+	// DISPATCH_TOKEN_FILE, as the tmux runtime tells a pane its daemon's configured Dispatch
+	// (tmux.Options.DispatchURL): both or neither, and with neither a pane's Dispatch is off.
+	dispatchURL, dispatchTokenFile string
 	// overlays answers the Oh My Pi overlay files one claim's pane is told, in PI_CONFIG_FILES
 	// order. A pane's overlays are the operator's (runtime.tmux.pi_config_files) and its role's
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
@@ -314,7 +316,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	seq := r.seq
 	r.mu.Unlock()
 
-	workDir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
+	workDir := r.workDir(spec.Issue)
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: make its working directory: %w", spec.Claim, err)
 	}
@@ -326,12 +328,17 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err := runtime.WriteSecretFiles(r.stateDir, []runtime.SecretFile{bootToken}); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	prompt, err := promptArgument(spec.Prompt)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+	}
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL,
+		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchTokenFile,
 		NATSURLs: r.natsURLs, RoleConfigFiles: r.overlays(spec.Claim),
 	}, []runtime.SecretFile{bootToken})
 	if err != nil {
@@ -342,7 +349,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		r.legion, "worker-shim",
 		"--connect", r.stream,
 		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", prompt,
+		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
 	}
 	if spec.ResumeSessionFile != "" {
 		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
@@ -393,6 +400,12 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	return pane.locator, nil
 }
 
+// workDir is the working directory of every pane of issue, which launch makes: the roles of one
+// issue share it, as they share the issue's jj workspace in a pod.
+func (r *localRuntime) workDir(issue string) string {
+	return filepath.Join(r.stateDir, "workspaces", issue)
+}
+
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
@@ -410,40 +423,6 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
 	return append(env, variables...)
-}
-
-// promptArgument is the value of the one `--append-system-prompt` word, as a pane's shell produces
-// it from omplaunch.SystemPromptArgument: the role prompt files concatenated, the addressing, then
-// the deployment instructions, separated by a blank line, with each command substitution's trailing
-// newlines dropped as `$(…)` drops them.
-func promptArgument(parts runtime.PromptParts) (string, error) {
-	read := func(paths ...string) (string, error) {
-		var body strings.Builder
-		for _, path := range paths {
-			file, err := os.ReadFile(path)
-			if err != nil {
-				return "", fmt.Errorf("read the prompt file: %w", err)
-			}
-			body.Write(file)
-		}
-		return strings.TrimRight(body.String(), "\n"), nil
-	}
-	roles, err := read(parts.RolePromptPaths...)
-	if err != nil {
-		return "", err
-	}
-	fragments := []string{roles}
-	if parts.Addressing != "" {
-		fragments = append(fragments, parts.Addressing)
-	}
-	if parts.DeploymentInstructionsPath != "" {
-		instructions, err := read(parts.DeploymentInstructionsPath)
-		if err != nil {
-			return "", err
-		}
-		fragments = append(fragments, instructions)
-	}
-	return strings.Join(fragments, "\n\n"), nil
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {
@@ -677,11 +656,6 @@ func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {
 	return nil
-}
-
-// RescueUnpushed has no disk that goes with a place, so it has nothing to check.
-func (r *localRuntime) RescueUnpushed(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, nil
 }
 
 // CleanupTree holds nothing per tree.

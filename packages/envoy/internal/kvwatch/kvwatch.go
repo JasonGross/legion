@@ -22,9 +22,12 @@
 // every record removes the entries it never touched: a read is never preceded by emptying the
 // cache, so a list served from it during the read is the copy it had, not a part of the bucket. A
 // read that times out or ends early removes nothing, and a timed-out one is read again by the
-// watcher itself. The watcher records whether its copy can be served (Servable): never before its
-// first complete read, and not once the copy has stopped following the bucket for longer than a
-// bound (the stale episode).
+// watcher itself. A cache that asks for it (WithScheduledRead) is also read whole again on a
+// schedule, a set time after each read that completed, beside the reads a watch, a timed-out scan,
+// a recreated bucket and a stream that could not be confirmed cause: that read repairs a copy that
+// drifted from its bucket in either direction while it followed it. The watcher records whether its
+// copy can be served (Servable): never before its first complete read, and not once the copy has
+// stopped following the bucket for longer than a bound (the stale episode).
 //
 // The watcher also finds by itself a bucket deleted, or deleted and created again, under it.
 // nats.go's ordered consumer does not end on a recreate: once its idle heartbeats stop it moves
@@ -102,6 +105,9 @@ type Watcher struct {
 	// probeInterval is how often the watcher reads its bucket's stream (probe): streamProbeInterval
 	// unless WithStreamProbeInterval replaced it, 0 for no periodic probe.
 	probeInterval time.Duration
+	// scheduledInterval is how long after a read that completed the watcher reads its bucket whole
+	// again (scheduledTimer): 0, for no scheduled read, unless WithScheduledRead set it.
+	scheduledInterval time.Duration
 	// scanIdle is how long a read's scan may deliver nothing before the read ends as timed out
 	// (idleExpired): ScanIdleTimeout unless WithScanIdleTimeout replaced it.
 	scanIdle time.Duration
@@ -117,9 +123,9 @@ type Watcher struct {
 	first bus.KeyValue
 
 	// after arms the wait between a stop nobody asked for and the ERROR that says no repair came,
-	// the wait before a read is read again, the wait before the next stream probe and the scan's
-	// idle wait: time.AfterFunc unless WithAfterFunc replaced it, so a test fires those waits
-	// itself.
+	// the wait before a read is read again, the wait before a scheduled read, the wait before the
+	// next stream probe and the scan's idle wait: time.AfterFunc unless WithAfterFunc replaced it,
+	// so a test fires those waits itself.
 	after AfterFunc
 
 	mu sync.RWMutex
@@ -150,12 +156,22 @@ type Watcher struct {
 	// (reportUnrepaired).
 	repairTimer Timer
 	// rereadTimer is the armed wait before the current generation's bucket is read again (reread):
-	// after its scan timed out, after a read of its stream found the bucket recreated, or after such a
-	// re-read failed to start. It is the marker that such a read is due, so a probe that finds the
-	// same recreate again starts no second one. The two places the generation moves (watch, Stop)
-	// clear it, and its callback carries the generation it was armed for, so one still running after
-	// that reads nothing.
+	// after its scan timed out, after a read of its stream found the bucket recreated, or after a
+	// re-read, a scheduled one included, failed to start. It is the marker that such a read is due,
+	// so a probe that finds the same recreate again starts no second one. The two places the
+	// generation moves (watch, Stop) clear it, and its callback carries the generation it was armed
+	// for, so one still running after that reads nothing.
 	rereadTimer Timer
+	// scheduledTimer is the armed wait before the current generation's scheduled read
+	// (WithScheduledRead), a re-read of its bucket (reread). The generation's read that completed
+	// arms it, and every watch that installs, the current watcher's own end, a disconnect and Stop
+	// clear it, so it is never armed while a read is under way. Its callback carries the generation
+	// it was armed for, so one still running after a watch moved the generation reads nothing, and a
+	// scheduled read whose watch a newer one overtook is discarded (watch). It is not rereadTimer,
+	// which says a re-read is due now: NeedsRead reads that one, and a probe that finds the bucket
+	// recreated starts its own re-read only while none is armed, so a scheduled read armed there
+	// would hold a recreated bucket's read back until its interval passed.
+	scheduledTimer Timer
 	// probeTimer is the armed wait before the current generation's next stream probe (probe). Each
 	// watch that installs arms it for its own generation and Stop clears it; its callback carries
 	// that generation, so one still running after either reads nothing.
@@ -281,7 +297,7 @@ func (w *Watcher) Start() {
 	}
 	w.mu.Unlock()
 	go func() {
-		err := w.watch(w.first, 0)
+		err := w.watch(context.Background(), w.first, 0)
 		if err == nil {
 			return
 		}
@@ -322,17 +338,22 @@ func (w *Watcher) Start() {
 // rewatched by the listener's self-health rebuild on the monitor's tick instead
 // (cmd/listener/main.go, rewatchListenerKVWatchers, called from rebuildListenerDependencies).
 // Either way the wait armed at the stop reports the outage once, at bus.RepairGrace (closed). The
-// error is returned unchanged, which its caller already logs.
-func (w *Watcher) Rewatch(conn *nats.Conn) error {
+// error is returned unchanged, which its caller already logs. The move waits on nothing past ctx,
+// which a reconnect hook passes as the run's context: the bucket's open, the stream read and the
+// watcher's create are made under it, and the legacy lookup and the previous watcher's consumer
+// delete, which nats.go gives no context, are waited for only until it ends (bus.OpenKeyValue,
+// watch). So a move on a connection that drops ends at the drop; the watcher a move installs does
+// not end with ctx (watch).
+func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		return fmt.Errorf("open %s JetStream: %w", w.name, err)
 	}
-	kv, err := bus.OpenKeyValue(conn, js, w.bucket)
+	kv, err := bus.OpenKeyValue(ctx, conn, js, w.bucket)
 	if err != nil {
 		return fmt.Errorf("open %s KV bucket: %w", w.name, err)
 	}
-	if err := w.watch(kv, 0); err != nil {
+	if err := w.watch(ctx, kv, 0); err != nil {
 		return fmt.Errorf("watch %s KV bucket: %w", w.name, err)
 	}
 	return nil
@@ -413,9 +434,13 @@ func (w *Watcher) WaitReady(ctx context.Context) error {
 // Each watcher lives in a context of its own (subscription): nats.go ends the subscription when
 // that context ends and parks a goroutine on it until then (bus.KeyValue.WatchKeys), so it is
 // cancelled once the watcher is stopped or has ended, never before. Its create request is bounded
-// by nats.go itself, since the context carries no deadline (WatchKeys): a create that fails is the
-// watch's error, as a failed stream read is, and leaves nothing to stop.
-func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
+// by nats.go itself, since the context carries no deadline (WatchKeys), and by run: the stream read
+// is made under run, and a run that ends while the create is in flight cancels the watcher's
+// context, which ends the create; a watcher the create still returned then is discarded as an
+// overtaken one is. A create that fails is the watch's error, as a failed stream read is. A run that
+// ends after the create returned leaves the watcher's context alone (context.AfterFunc's stop), so
+// the watcher never ends with the hook run that installed it.
+func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) error {
 	w.mu.Lock()
 	stopped := w.stopped
 	if stopped {
@@ -433,13 +458,23 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	// watcher's create request are part of it, not just the entries that follow.
 	started := time.Now()
 	sent := w.now()
-	state, err := kv.ReadStreamState()
+	state, err := kv.ReadStreamState(run)
 	if err != nil {
 		return err
 	}
 	stream := state.Created
 	ctx, cancel := context.WithCancel(context.Background())
+	abandon := context.AfterFunc(run, cancel)
 	watcher, err := kv.WatchKeys(ctx, jetstream.AllKeys)
+	if !abandon() {
+		// run ended while the create was in flight, and cancelled the watcher's context.
+		if err == nil {
+			sub := &subscription{watcher: watcher, cancel: cancel}
+			sub.retireWithin(run, abandonedDrain)
+		}
+		cancel()
+		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
+	}
 	if err != nil {
 		cancel()
 		return err
@@ -479,10 +514,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	if older || (expect != 0 && w.generation != expect) {
 		w.mu.Unlock()
 		w.applyMu.Unlock()
-		go sub.discard()
-		// Stop reports a consumer the server has lost, or a subscription already ended, to its
-		// caller, and neither is worth a line.
-		_ = sub.stop()
+		sub.retireWithin(run, abandonedDrain)
 		return nil
 	}
 	previous := w.watcher
@@ -507,10 +539,12 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	w.reading = true
 	w.readDisconnects = disconnects
 	// The replacement runs, so the stop it repaired needs no ERROR, and the read a timed-out scan
-	// or a recreate was waiting to begin is this one. The stream probe and the scan's idle wait
-	// follow the new generation.
+	// or a recreate was waiting to begin is this one. A scheduled read is armed again only once
+	// this read completes (completeRead), so none is armed while it is under way. The stream probe
+	// and the scan's idle wait follow the new generation.
 	w.clearRepairArm()
 	w.clearRereadArm()
+	w.clearScheduledArm()
 	w.armProbe(generation)
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
@@ -525,8 +559,21 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	}
 	if previous != nil {
 		// Its consume goes on reading it until it closes. Stop reports a consumer the server has
-		// lost to its caller, never at ERROR.
-		_ = previous.stop()
+		// lost to its caller, never at ERROR. Stop deletes the consumer nats.go created for the
+		// previous watcher, a request that takes no context, so it is waited for only until run
+		// ends: a reconnect hook's run whose connection drops while that delete is unanswered ends
+		// at the drop rather than at the request's own bound, and the stop goes on by itself
+		// (TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete). A run that does not end waits
+		// for it, so a caller that returns from a live Rewatch has the previous watcher stopped.
+		stopped := make(chan struct{})
+		go func() {
+			_ = previous.stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-run.Done():
+		}
 	}
 	go w.consume(sub, generation, read, started, idle, idleSince)
 	return nil
@@ -611,7 +658,7 @@ func (w *Watcher) endScan(generation uint64, read Read, scan KeyScan, started ti
 
 // closed handles the end of sub, generation's watcher, whose updates nats.go has closed: it cancels
 // sub's context, which releases the goroutine nats.go parks on it, and, when generation is still
-// current, records the end as the watcher's terminal error.
+// current, records the end as the watcher's terminal error and disarms the scheduled read.
 func (w *Watcher) closed(sub *subscription, generation uint64) {
 	sub.cancel()
 	w.mu.Lock()
@@ -622,6 +669,10 @@ func (w *Watcher) closed(sub *subscription, generation uint64) {
 	}
 	w.watcher = nil
 	w.clearIdleArm()
+	// Only a Rewatch repairs a watcher that ended on its own, and a scheduled read would install
+	// over the terminal error recorded here, on the handle whose connection may be the one that
+	// closed.
+	w.clearScheduledArm()
 	err := errors.New(w.name + " watcher stopped")
 	w.err = err
 	w.stopFollowing()
@@ -701,7 +752,8 @@ func (w *Watcher) clearIdleArm() {
 // and only then records that the copy follows its bucket, so expiry that waits on following
 // resumes only after the sweep. A recreate found, or a disconnect, between the sweep and the state
 // write skips the write: the read did deliver every record of the stream it read, so its sweep
-// stands, and the copy stays not following until the next read.
+// stands, and the copy stays not following until the next read. A read that completes arms the
+// generation's scheduled read (WithScheduledRead), so its wait counts from this completion.
 func (w *Watcher) completeRead(generation uint64, read Read) {
 	w.mu.RLock()
 	completes := w.completes(generation)
@@ -741,6 +793,7 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 		w.following = true
 		w.completedOnce = true
 		w.staleSince = time.Time{}
+		w.armScheduledRead(generation)
 		// The copy can be served now, so a caller waiting for one (WaitComplete) is released.
 		w.wakeComplete()
 	}

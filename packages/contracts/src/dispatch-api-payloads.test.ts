@@ -55,6 +55,7 @@ const PAYLOAD_TYPES = [
   "MessageAcceptedEventPayload",
   "MessageDeliveryEventPayload",
   "MessageEventPayload",
+  "PriorityUpdatedEventPayload",
   "Project",
   "ProjectDefaultAssigneeUpdatedEventPayload",
   "ReferenceChangesPayload",
@@ -82,17 +83,19 @@ const NON_EVENT_PAYLOAD_TYPES = [
 /**
  * The payload field types that stay a closed list's own alias rather than `z.output` of a
  * schema: a schema spells such a field `z.enum(THE_LIST)`, and the type beside `THE_LIST` is
- * what the field produces. Seven are expected, and an eighth means a list grew a schema-derived
+ * what the field produces. Nine are expected, and a tenth means a list grew a schema-derived
  * type beside the alias, or a payload took a field whose values nobody closed.
  */
 const CONSTANT_LIST_TYPES = [
   "AskTurn",
   "AskUrgency",
+  "DeliveryAttemptState",
   "DeliveryCapability",
   "DispatchScope",
   "GatedStep",
   "IssueComponentsMode",
   "MessageDeliveryMode",
+  "SettledDeliveryState",
 ];
 
 /**
@@ -108,7 +111,7 @@ const CONSTANT_LIST_TYPES = [
  * aliases by. So a regeneration that moves one of the eleven reds the typecheck by that name, and
  * a twelfth is added by passing that assertion rather than by being written here.
  */
-const SCHEMA_DERIVATIONS = 61;
+const SCHEMA_DERIVATIONS = 62;
 
 /** The payloads whose shape the Go route table holds, so the generated module is their one
  *  definition and the split declares none of them: a `project.*` event carries the project row a

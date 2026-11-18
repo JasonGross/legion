@@ -108,7 +108,7 @@ import {
 } from "./theme/classes";
 
 const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
 );
 
 const ProjectPage = lazy(() =>
@@ -116,6 +116,14 @@ const ProjectPage = lazy(() =>
 );
 const DocumentPage = lazy(() =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
+);
+const PrioritiesPage = lazy(() =>
+  import("./features/priorities/PrioritiesPage").then((module) => ({
+    default: module.PrioritiesPage,
+  }))
+);
+const PriorityPage = lazy(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
 );
 
 const AgentsPage = lazy(() =>
@@ -889,6 +897,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
+                <Route element={<PrioritiesPage />} path="/priorities" />
+                <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />

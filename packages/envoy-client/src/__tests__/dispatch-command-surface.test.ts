@@ -110,6 +110,11 @@ function issueBody(key = ISSUE) {
     labels: ["infra"],
     parent: null,
     blocked_by: [],
+    advances: [
+      { id: "ship-the-daemon", inherited: false },
+      { id: "legion-first", inherited: true },
+    ],
+    advances_revision: 7,
     assignee: "person@example.com",
     claim: null,
     components: { mode: "explicit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -250,6 +255,26 @@ function planReviewBody() {
   };
 }
 
+/** `POST /api/v1/artifacts/{id}/versions/{number}/reviews`: the person's approval of the issue's
+ *  spec at the version `dispatch review`'s example names. The person is the one the token names,
+ *  and the act names the session the token proved; no request was open, so the review answers no
+ *  ask. */
+function reviewBody() {
+  return {
+    id: UUID,
+    artifact_id: ARTIFACT_ID,
+    version: 2,
+    state: "approved",
+    actor: { kind: "user", id: "person@example.com", act: { session: SESSION } },
+    reason: null,
+    ask_id: null,
+    kind: "person",
+    created_at: AT,
+    content_sha256: null,
+    content_sha256_source: null,
+  };
+}
+
 /** What a check compares its results with: the head of the issue's pull request, at the commit
  *  the one recorded result stands at, as Dispatch read it. */
 function checkBasisBody() {
@@ -372,6 +397,69 @@ function architectureSource() {
   };
 }
 
+/** `GET /api/v1/priorities`: one live priority with work under it, and one issue in each of the
+ *  two faults, so the record holds every line `dispatch priorities` can print. Neither faulted
+ *  issue is claimed, so the run reads no agent list and no printed line carries a liveness. */
+function prioritiesBody() {
+  return {
+    priorities: [
+      {
+        id: "ship-the-daemon",
+        title: "Ship the daemon",
+        description: "The daemon runs every phase.",
+        owner: "person@example.com",
+        rank: "0|hzzzzz:",
+        state: "live",
+        made_at: AT,
+        made_by: actor,
+        work: {
+          by_status: { backlog: 1, todo: 2, in_progress: 3, done: 0 },
+          claimed: 2,
+          open_asks: 1,
+          closed_last_7_days: 4,
+          newest_event_at: AT,
+        },
+      },
+    ],
+    work_under_no_priority: {
+      count: 1,
+      by_project: { DSP: 1 },
+      issues: [
+        {
+          key: "DSP-7",
+          project: "DSP",
+          title: "Rotate the broker keys",
+          status: "in_progress",
+          assignee: "person@example.com",
+          claim: null,
+          advances: [],
+          moved_at: null,
+          moved_by: null,
+          changed_at: AT,
+        },
+      ],
+    },
+    priority_work_parked: {
+      count: 1,
+      by_priority: { "ship-the-daemon": 1 },
+      issues: [
+        {
+          key: "DSP-9",
+          project: "DSP",
+          title: "Backfill the index",
+          status: "backlog",
+          assignee: null,
+          claim: null,
+          advances: [{ id: "ship-the-daemon", inherited: true }],
+          moved_at: AT,
+          moved_by: actor,
+          changed_at: AT,
+        },
+      ],
+    },
+  };
+}
+
 /** The fake Dispatch: one fixed answer per route every command here reaches. `body` is what the
  *  request carried, which the one route that answers with the caller's own text reads. */
 function answerFor(method: string, pathname: string, body?: unknown): Response {
@@ -395,6 +483,8 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response([{ key: "DSP", name: "Dispatch", created_at: AT }]);
     case "POST /api/v1/projects":
       return response({ key: "CORE", name: "Core", created_at: AT }, 201);
+    case "GET /api/v1/priorities":
+      return response(prioritiesBody());
     case "GET /api/v1/search":
       return response(fakeSearchResponse([]));
     case "GET /api/v1/whoami":
@@ -448,6 +538,13 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "answers") {
       return response({ session_id: SESSION, since: AT, total: 0, items: [] });
     }
+    // `dispatch send-to-agent`: answered once the first delivery attempt settled, here as sent.
+    if (rest === "messages" && method === "POST") {
+      return response(
+        { ...messageBody(), issue_key: null, deliveries: [{ delivery: "aside", state: "sent" }] },
+        201
+      );
+    }
   }
   if (segments[2] === "issues" && segments.length >= 4) {
     if (rest === "" && (method === "GET" || method === "PATCH")) {
@@ -484,6 +581,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
+    if (rest === "versions/2/reviews" && method === "POST") return response(reviewBody(), 201);
     if (rest === "suggestions") {
       return response({ ...commentBody(), artifact_id: ARTIFACT_ID }, 201);
     }

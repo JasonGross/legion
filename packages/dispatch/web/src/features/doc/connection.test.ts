@@ -3,6 +3,7 @@ import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import {
   type ConnectionState,
   colorForLogin,
@@ -168,6 +169,7 @@ async function withProvider(
       onSynced: () => {
         synced = true;
       },
+      schemaCreatable: 1,
       schemaVersion: 1,
     });
     await body({
@@ -639,7 +641,7 @@ test("a writable page's stamp the server acknowledges is never counted or stored
 
 test("a document whose browser keeps no edits says so, and still connects", async () => {
   const realStorage = globalThis.indexedDB;
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: undefined });
   try {
     await withProvider(artifactId(), async ({ pending }) => {

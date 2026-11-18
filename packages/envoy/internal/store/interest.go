@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 type Interest struct {
@@ -35,6 +36,23 @@ func Merge(item Interest, topics []string) Interest {
 	return item
 }
 
+// oneInterest is what makes two spellings of a name one interest while every reader takes both
+// forms: the old form of a topic that has one (contracts.LegacyTwin), and the topic itself
+// otherwise. It is read on both sides of a removal, because the new form of an agent's name is a
+// wildcard over every project (notifications.agent.*.s1), which no stored topic equals: a reading
+// that compared the forms as strings would leave a record's notifications.agent._.s1 and
+// notifications.role.PRIV.<role> standing after their own unsubscribe. A topic with no old form,
+// one over every issue of a project among them, is its own interest.
+func oneInterest(topic string) string {
+	if twin, ok := contracts.LegacyTwin(topic); ok {
+		return twin
+	}
+	return topic
+}
+
+// Remove takes topics out of item, each in every form a reader takes it in (oneInterest): the old
+// and new forms of an issue's, an agent's or a role's name are one interest, and a form left
+// behind would keep the session's consumer filtered on it. No topics at all removes every topic.
 func Remove(item Interest, topics []string) Interest {
 	if len(topics) == 0 {
 		item.Topics = nil
@@ -42,11 +60,11 @@ func Remove(item Interest, topics []string) Interest {
 	}
 	cut := map[string]bool{}
 	for _, topic := range topics {
-		cut[topic] = true
+		cut[oneInterest(topic)] = true
 	}
 	out := make([]string, 0, len(item.Topics))
 	for _, topic := range item.Topics {
-		if cut[topic] {
+		if cut[oneInterest(topic)] {
 			continue
 		}
 		out = append(out, topic)
@@ -63,9 +81,10 @@ func Remove(item Interest, topics []string) Interest {
 // messages meant for another session or for another project's controller. The listener refuses
 // one at /v1/interests/subscribe; this drops one a row stored before that guard held, and one
 // whose role the session has since lost, so every write of a row (Upsert, Remove) cleans it.
-// roles is what the session holds now (Registry.RolesHeldBy, read by controllerLaneRoles).
-// sessionID is the row's key, not the session_id its stored value names. It filters topics in
-// place, so callers pass a slice they own (Merge's and Remove's results are).
+// roles is what the session holds now, as each controller role's claim record says
+// (Registry.controllerLaneRoles). sessionID is the row's key, not the session_id its stored value
+// names. It filters topics in place, so callers pass a slice they own (Merge's and Remove's
+// results are).
 func dropPrivateStreamTopics(sessionID string, roles []string, topics []string) []string {
 	return slices.DeleteFunc(topics, func(topic string) bool {
 		return bus.ReachesPrivateStreamSubject(sessionID, topic, roles)
@@ -79,7 +98,10 @@ func dropPrivateStreamTopics(sessionID string, roles []string, topics []string) 
 // subscribeHandler, through Registry.PlanInterest), so the filter and the row it stores name one
 // set: a filter naming a topic the row does not would carry that topic into a session no interest
 // of its own follows, and a row holding one the filter does not would say a session follows a
-// topic its consumer never delivers.
+// topic its consumer never delivers. roles is the controller roles the session holds, each read
+// from its claim record and not from the role claim copy (Registry.controllerLaneRoles), so the
+// set keeps a controller notice lane exactly while the store gives the session that project's
+// controller role.
 func MergedTopics(sessionID string, roles []string, cur []string, topics []string) []string {
 	merged := dropPrivateStreamTopics(sessionID, roles, Merge(Interest{Topics: cur}, topics).Topics)
 	slices.Sort(merged)

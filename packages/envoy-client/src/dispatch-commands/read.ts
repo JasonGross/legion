@@ -42,7 +42,7 @@ import {
   issueSummary,
   liveAgents,
   logSummary,
-  repositoryFieldsWarnings,
+  olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
 import { askSummary, commentSummary, messageSummary } from "./render-item";
@@ -259,7 +259,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const { artifact } = resolved;
     const ownerKey = resolved.issue?.key ?? artifact.project;
     const documentRef = dispatchDocumentRef(ownerKey, artifact.slug);
-    const approval = approvalLine(artifact);
+    const approval = approvalLine(artifact, typeof resolved.issue?.closed_at === "string");
     return {
       text: [
         `Document: ${ownerKey} / ${artifact.name}`,
@@ -331,6 +331,6 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     ),
     details: { issue: read.issue.key },
     ...showImages(pictures),
-    ...repositoryFieldsWarnings(read.issue),
+    ...olderServerWarnings(read.issue),
   };
 }

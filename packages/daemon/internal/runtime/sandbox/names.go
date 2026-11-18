@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -89,6 +90,13 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
+	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
+	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
+	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
+	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
+	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -145,10 +153,16 @@ const feedSubPath = "feed"
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
 // mounted, as AgentSecretsTokenFile. The key directory is each role's own; the token is shared.
+// AgentSecretsExchangeDir is where an enrolled pod's projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience) is mounted, as AgentSecretsExchangeFile, beside the broker's
+// token: the identity every role of the pod is told of as AGENT_SECRETS_MACHINE_TOKEN_FILE, shared
+// as the broker's token is.
 const (
-	AgentSecretsKeyDir    = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
-	AgentSecretsTokenDir  = launcher.FixedRoot + "/agent-secrets-token"
-	AgentSecretsTokenFile = "token"
+	AgentSecretsKeyDir       = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
+	AgentSecretsTokenDir     = launcher.FixedRoot + "/agent-secrets-token"
+	AgentSecretsTokenFile    = "token"
+	AgentSecretsExchangeDir  = launcher.FixedRoot + "/agent-secrets-exchange"
+	AgentSecretsExchangeFile = "token"
 )
 
 // The image's own paths (packages/daemon/docker/worker.Dockerfile: ENV and the COPY lines).
@@ -317,6 +331,13 @@ const (
 	labelRole    = "legion.dev/role"
 )
 
+// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
+// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
+// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
+// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
+// from the sandbox the launch that builds it decided.
+const labelSandbox = "legion.dev/sandbox"
+
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template the controller's Sandbox owns — an issue's owns
 // none, its disk being the pod's own ephemeral volume. The Agent Sandbox controller names the
@@ -454,8 +475,21 @@ func generationDir(generation uint64) string {
 	return LauncherPrivateDir + "/" + shimwire.GenerationDir(generation)
 }
 
-// claudeMCPFile is the one file a Claude launch adds to its generation's credentials
-// (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
+// claudeMCPFile is the one file a Claude launch adds to its generation's credentials beyond every
+// launch's (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
 // (claudelaunch.MCPConfig), written 0600 into generationDir beside the boot token and removed
 // with it when the generation ends.
 const claudeMCPFile = "claude-mcp.json"
+
+// systemPromptPath is where a generation's agent reads the launch's system prompt:
+// runtime.SystemPromptFile in generationDir, which the launcher writes 0600, with every entry of
+// the start command's Files (launcherCommand), into the 0700 directory it makes for the generation,
+// before the child starts, and removes with the rest of that directory when the generation ends
+// (internal/launcher's writeFiles). The agent's argv names this path as the value of Oh My Pi's
+// `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv;
+// runtime.SystemPromptFile says why it is a file). The directory is on the role's own
+// memory-backed private volume, which in an issue pod only that role's namespace binds back at
+// LauncherPrivateDir (RolesDir, role-init), so no other role's process can read or change the file.
+func systemPromptPath(generation uint64) string {
+	return generationDir(generation) + "/" + runtime.SystemPromptFile
+}

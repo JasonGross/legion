@@ -40,8 +40,6 @@ const (
 	TypeShutdown               = "shutdown"
 	TypeAdoptWorkingCopy       = "adopt-working-copy"
 	TypeAdoptWorkingCopyResult = "adopt-working-copy-result"
-	TypeRescueUnpushed         = "rescue-unpushed"
-	TypeRescueUnpushedResult   = "rescue-unpushed-result"
 	TypeRPCChunk               = "rpc_chunk"
 	// hello2 is the hello every shim sends since DaemonAPIVersion 8: the boot token and, under a
 	// runtime that enrolls pods with the secrets broker, the pod's key thumbprint and
@@ -69,6 +67,10 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
+	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
+	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
+	TypeLauncherMemoryKill = "launcher_memory_kill"
 	// The shared public leak check's two directions: the daemon pushing the check's packed
 	// directory, in slices under the frame limit, to a launcher whose hello named a tag, and the
 	// launcher answering each slice, the last with the outcome of its install.
@@ -181,8 +183,128 @@ type LauncherHello struct {
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 }
 
-// LauncherHelloAck admits a launcher to receive child process commands.
-type LauncherHelloAck struct{}
+// LauncherHelloAck admits a launcher to receive child process commands, and hands it the
+// settings its memory guard runs by, when this daemon has any to hand it, and whether this daemon
+// knows a kill report the pod's own kernel made.
+type LauncherHelloAck struct {
+	// MemoryGuard is absent rather than zero when no settings are sent, and that absence is what
+	// turns the guard off: a daemon built before the guard and a deployment that turned it off
+	// both send no member at all, where a present member whose numbers are zero is settings the
+	// launcher would refuse. The pointer is what tells the two apart, as it does for
+	// Hello2.AgentSecrets and LauncherState.Child.
+	MemoryGuard *LauncherMemoryGuard `json:"memoryGuard,omitempty"`
+	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
+	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
+	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
+	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
+	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
+	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
+	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
+	// writes.
+	KernelKills bool `json:"kernelKills,omitempty"`
+}
+
+// LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
+// largest process it may end, where those processes hold at least FloorPercent of the limit
+// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
+// another.
+//
+// It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
+// which is the same absence a daemon that does not know the guard sends, so one rule in the
+// launcher covers both (LauncherHelloAck.MemoryGuard).
+type LauncherMemoryGuard struct {
+	ActPercent           int `json:"actPercent"`
+	FloorPercent         int `json:"floorPercent"`
+	WaitSeconds          int `json:"waitSeconds"`
+	IntervalMilliseconds int `json:"intervalMilliseconds"`
+}
+
+// The ranges LauncherMemoryGuard's four numbers must be in, and the settings a guard runs by when
+// nobody has said otherwise. Both sides of the wire read them: the daemon's loader refuses a file
+// outside the ranges, and the launcher checks a frame against them a second time, on its own side
+// of a connection that carries version skew both ways (Validate). The two checks are deliberate;
+// their values are one source here, because a widening the launcher did not know would load
+// cleanly in the daemon and then be refused in every pod.
+//
+// The defaults are one source too: they are the settings the launcher's guard runs by before any
+// acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
+// both. The act share's default is the one a measurement may move. Every minimum is above zero
+// because a guard cannot be armed with a zero interval or wait.
+const (
+	MemoryGuardActMin      = 50
+	MemoryGuardActMax      = 95
+	MemoryGuardFloorMin    = 1
+	MemoryGuardFloorMax    = 50
+	MemoryGuardWaitMin     = 1
+	MemoryGuardWaitMax     = 60
+	MemoryGuardIntervalMin = 50
+	MemoryGuardIntervalMax = 5000
+
+	MemoryGuardActDefault      = 85
+	MemoryGuardFloorDefault    = 10
+	MemoryGuardWaitDefault     = 5
+	MemoryGuardIntervalDefault = 100
+)
+
+// LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
+// ended with SIGKILL by the launcher's memory guard, or, in a microVM pod, stopped by the pod's own
+// kernel (Cause). The launcher sends it, unasked, on the connection of the role whose process it
+// was, and the daemon tells that role why the process is gone (INFRA-3557).
+//
+// Guard is the identifier the guard minted for itself when the launcher process started, and
+// Sequence the guard's own count of its kills, from 1: together they name the kill once, so a
+// report sent twice is applied once. Executable names the process as every line of the guard
+// does: the base name of its executable, or its stat name where the guard could not read that,
+// each character that does not print escaped and the whole cut to MemoryKillExecutableBytes. It
+// carries none of the process's arguments, which may hold a credential no masking rule names, such
+// as a positional password; the role that started the process has them. SizeBytes is the
+// process's anonymous memory as the guard measured it, ReadingBytes the pod's anonymous memory
+// (/proc/meminfo's AnonPages) when it acted, CounterBytes the cgroup's memory counter then, and
+// LimitBytes the container's memory limit.
+//
+// Cause is MemoryKillCauseGuard, empty, for the guard's own kill, the only kill a launcher that
+// predates the member reports, and MemoryKillCauseKernel or MemoryKillCauseKernelProtected for a
+// process the pod's kernel stopped, which the launcher's watch of that kernel reports with an
+// identifier and a count of its own in Guard and Sequence. It is left out when empty, so the
+// guard's report is the bytes it was before the member existed; Validate refuses any other value.
+type LauncherMemoryKill struct {
+	Guard        string          `json:"guard"`
+	Sequence     uint64          `json:"sequence"`
+	PID          int             `json:"pid"`
+	Executable   string          `json:"executable"`
+	SizeBytes    uint64          `json:"sizeBytes"`
+	ReadingBytes uint64          `json:"readingBytes"`
+	CounterBytes uint64          `json:"counterBytes"`
+	LimitBytes   uint64          `json:"limitBytes"`
+	At           time.Time       `json:"at"`
+	Cause        MemoryKillCause `json:"cause,omitempty"`
+}
+
+// MemoryKillCause is what stopped the process a launcher_memory_kill names, which chooses the
+// note its role is told. It is one kind with three values, since a kill has exactly one of them,
+// and its empty value, MemoryKillCauseGuard, is the guard's own kill, which every launcher built
+// before the member reports.
+//
+// MemoryKillCauseKernel and MemoryKillCauseKernelProtected are a process the pod's own kernel
+// stopped because the pod ran out of memory: in a microVM pod, whose kernel is the pod's alone and
+// stops one process rather than the whole sandbox. The first is a command of the role's, one the
+// guard would have been free to end; the second is one of the processes the launcher's classifier
+// protects, which run the role's session (the role-init, the shim, the agent and their helpers),
+// so the role is told what that process's end does to it. A launcher sends either only on a
+// connection whose acknowledgement carried LauncherHelloAck.KernelKills.
+type MemoryKillCause string
+
+const (
+	MemoryKillCauseGuard           MemoryKillCause = ""
+	MemoryKillCauseKernel          MemoryKillCause = "kernel"
+	MemoryKillCauseKernelProtected MemoryKillCause = "kernel-protected"
+)
+
+// MemoryKillExecutableBytes is the most bytes of a process's name a launcher_memory_kill carries:
+// a base name on Linux is at most 255 bytes, so the bound holds whole any name that needs no
+// escape, and it bounds what one report puts into a role's note whatever its sender wrote.
+const MemoryKillExecutableBytes = 256
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.
 type LauncherChild struct {
@@ -576,78 +698,6 @@ type WorkspaceBundle struct {
 	At        time.Time         `json:"at"`
 }
 
-// RescueUnpushed asks the shim, before the daemon replaces its pod, to check every workspace on
-// the pod's disk for work its remote lacks and to push that work to rescue branches on that remote,
-// as the shim's role and with that role's own credential (internal/rescue). WorkspaceTimeoutMs
-// bounds one workspace's check and push, TimeoutMs the whole check. The daemon names the branches
-// and the bounds, never a command or a path. A shim built before this frame forwards it to its
-// agent, which refuses it as a command it does not know; the daemon reads that refusal as a pod it
-// cannot check.
-//
-// The request names two branches. Target is the issue's one rescue branch, `legion/<KEY>-rescue`,
-// which only moves forward; only a shim that knows the field reads it. Branch is the pod's own
-// prefix, `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which an older shim numbers from 1 and
-// reads alone: it ignores Target. The one branch rides in a field of its own because an older shim
-// reports every remote branch whose name starts with `<Branch>-` as its own. With the one branch's
-// name in Branch, it would report every earlier pod's rescue branches
-// (`legion/<KEY>-rescue-<pod>-<n>`) as this pod's.
-type RescueUnpushed struct {
-	ID string `json:"id"`
-	// Branch is the per-pod prefix an older shim numbers from 1.
-	Branch string `json:"branch"`
-	// Target is the issue's one rescue branch. An older daemon sends none.
-	Target             string `json:"target,omitempty"`
-	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
-	TimeoutMs          int    `json:"timeoutMs"`
-}
-
-// RescueUnpushedResult answers RescueUnpushed: OK with one entry per workspace on the disk, or
-// why the shim could not run the check at all.
-type RescueUnpushedResult struct {
-	ID         string            `json:"id"`
-	OK         bool              `json:"ok"`
-	Error      string            `json:"error,omitempty"`
-	Workspaces []RescueWorkspace `json:"workspaces,omitempty"`
-}
-
-// RescueWorkspace is one workspace's check: Status "clean" (nothing its remote lacks),
-// "rescued" (Branches name the rescue branch with the commit it holds: the branch this check
-// pushed to, or one whose tip already holds the workspace's own work; an older shim names each
-// branch of the request's prefix the remote holds) or "error" (Error says why, and nothing of it
-// is known to be safe).
-type RescueWorkspace struct {
-	Dir      string         `json:"dir"`
-	Status   string         `json:"status"`
-	Branches []RescueBranch `json:"branches,omitempty"`
-	Error    string         `json:"error,omitempty"`
-}
-
-// RescueBranch is one rescue branch the check reports, and the commit it holds. Previous, Pushed
-// and Commits came with the issue's one rescue branch (RescueUnpushed's Target): an older daemon
-// ignores them, and an older shim sends none of them. A shim that knows them reports at least one
-// commit for every branch it reports, and an older shim reports none, so the commit list is what
-// tells the two report shapes apart.
-type RescueBranch struct {
-	Name   string `json:"name"`
-	Commit string `json:"commit"`
-	// Previous is the branch's tip before this check's push, and empty for a branch the push
-	// created.
-	Previous string `json:"previous,omitempty"`
-	// Pushed is whether this check pushed the branch; false is a branch an earlier check pushed.
-	Pushed bool `json:"pushed,omitempty"`
-	// Commits is the work the branch carries: the commits this check's push added, or, for a
-	// branch it did not push, the commits only that branch holds.
-	Commits []RescueCommit `json:"commits,omitempty"`
-}
-
-// RescueCommit is one commit a rescue branch carries.
-type RescueCommit struct {
-	ID string `json:"id"`
-	// Subject is the commit's first line, cut at 200 bytes on a rune boundary, so one long
-	// message cannot grow the report without bound.
-	Subject string `json:"subject,omitempty"`
-}
-
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
 // frame's Index-th ChunkPayloadBytes slice; ByteLength is the whole frame's size. See chunks.go.
 type RPCChunk struct {
@@ -681,8 +731,6 @@ func (PromptResult) FrameType() string                 { return TypePromptResult
 func (Shutdown) FrameType() string                     { return TypeShutdown }
 func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
 func (AdoptWorkingCopyResult) FrameType() string       { return TypeAdoptWorkingCopyResult }
-func (RescueUnpushed) FrameType() string               { return TypeRescueUnpushed }
-func (RescueUnpushedResult) FrameType() string         { return TypeRescueUnpushedResult }
 func (RPCChunk) FrameType() string                     { return TypeRPCChunk }
 func (r Raw) FrameType() string                        { return r.Type }
 func (Hello2) FrameType() string                       { return TypeHello2 }
@@ -702,6 +750,7 @@ func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorksp
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
 func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
 
@@ -771,16 +820,6 @@ func (f AdoptWorkingCopyResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeAdoptWorkingCopyResult, plain(f))
 }
 
-func (f RescueUnpushed) MarshalJSON() ([]byte, error) {
-	type plain RescueUnpushed
-	return marshalFrame(TypeRescueUnpushed, plain(f))
-}
-
-func (f RescueUnpushedResult) MarshalJSON() ([]byte, error) {
-	type plain RescueUnpushedResult
-	return marshalFrame(TypeRescueUnpushedResult, plain(f))
-}
-
 func (f RPCChunk) MarshalJSON() ([]byte, error) {
 	type plain RPCChunk
 	return marshalFrame(TypeRPCChunk, plain(f))
@@ -818,8 +857,9 @@ func (f LauncherHello) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherHello, plain(f))
 }
 
-func (LauncherHelloAck) MarshalJSON() ([]byte, error) {
-	return marshalFrame(TypeLauncherHelloAck, struct{}{})
+func (f LauncherHelloAck) MarshalJSON() ([]byte, error) {
+	type plain LauncherHelloAck
+	return marshalFrame(TypeLauncherHelloAck, plain(f))
 }
 
 func (f LauncherState) MarshalJSON() ([]byte, error) {
@@ -870,6 +910,11 @@ func (f LauncherBundleResult) MarshalJSON() ([]byte, error) {
 func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	type plain LauncherRestored
 	return marshalFrame(TypeLauncherRestored, plain(f))
+}
+
+func (f LauncherMemoryKill) MarshalJSON() ([]byte, error) {
+	type plain LauncherMemoryKill
+	return marshalFrame(TypeLauncherMemoryKill, plain(f))
 }
 
 func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
@@ -1175,30 +1220,6 @@ func marshalWorkspaceBundle(b WorkspaceBundle) ([]byte, error) {
 	return append(body, b.Bundle...), nil
 }
 
-// Validate refuses a rescue request the shim would refuse: no id, a branch prefix or a target that
-// is not a legion/ branch name (isLegionBranch), or a bound that is not positive or puts one
-// workspace's bound above the whole check's. An empty target is an older daemon's, which names
-// none.
-func (f RescueUnpushed) Validate() error {
-	switch {
-	case f.ID == "":
-		return fmt.Errorf("%w: rescue-unpushed carries no id", ErrMalformedFrame)
-	case !isLegionBranch(f.Branch):
-		return fmt.Errorf("%w: rescue-unpushed branch %q is not a legion/ branch name", ErrMalformedFrame, f.Branch)
-	case f.Target != "" && !isLegionBranch(f.Target):
-		return fmt.Errorf("%w: rescue-unpushed target %q is not a legion/ branch name", ErrMalformedFrame, f.Target)
-	case f.WorkspaceTimeoutMs <= 0 || f.TimeoutMs <= 0 || f.WorkspaceTimeoutMs > f.TimeoutMs:
-		return fmt.Errorf("%w: rescue-unpushed bounds workspaceTimeoutMs %d, timeoutMs %d", ErrMalformedFrame, f.WorkspaceTimeoutMs, f.TimeoutMs)
-	}
-	return nil
-}
-
-// isLegionBranch is whether name is one of an issue's own branches (legion/...) that no git
-// refspec could misread: the shim pushes to it, so a `:` or a space must not reach the push.
-func isLegionBranch(name string) bool {
-	return strings.HasPrefix(name, "legion/") && !strings.ContainsAny(name, " \t\n:^~?*[\\") && !strings.Contains(name, "..")
-}
-
 // thumbprintShape is a base64url-encoded SHA-256: 43 characters, no padding (RFC 7638).
 var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
@@ -1274,6 +1295,51 @@ func (f LauncherStop) Validate() error {
 	return nil
 }
 
+// Validate refuses guard settings outside the ranges both sides of the wire hold them to, naming
+// the member and its range. The launcher checks them again rather than trusting the daemon's
+// loader, because a daemon of another release may hold other ranges (MemoryGuardActMin).
+func (g LauncherMemoryGuard) Validate() error {
+	for _, member := range []struct {
+		name          string
+		value, lo, hi int
+	}{
+		{"actPercent", g.ActPercent, MemoryGuardActMin, MemoryGuardActMax},
+		{"floorPercent", g.FloorPercent, MemoryGuardFloorMin, MemoryGuardFloorMax},
+		{"waitSeconds", g.WaitSeconds, MemoryGuardWaitMin, MemoryGuardWaitMax},
+		{"intervalMilliseconds", g.IntervalMilliseconds, MemoryGuardIntervalMin, MemoryGuardIntervalMax},
+	} {
+		if member.value < member.lo || member.value > member.hi {
+			return fmt.Errorf("%w: launcher_hello_ack memoryGuard.%s is %d, not between %d and %d",
+				ErrMalformedFrame, member.name, member.value, member.lo, member.hi)
+		}
+	}
+	return nil
+}
+
+// Validate refuses a kill report the daemon could not apply once or tell a role of: one naming no
+// guard or a sequence below the 1 the guard counts from, which together are the report's
+// identity; one naming no process or no limit; one whose executable is longer than the bound a
+// role's note is held to; and one whose cause is none of the three MemoryKillCause values, which
+// no note says.
+func (f LauncherMemoryKill) Validate() error {
+	switch {
+	case f.Guard == "":
+		return fmt.Errorf("%w: launcher_memory_kill carries no guard", ErrMalformedFrame)
+	case f.Sequence < 1:
+		return fmt.Errorf("%w: launcher_memory_kill sequence is %d", ErrMalformedFrame, f.Sequence)
+	case f.PID <= 0:
+		return fmt.Errorf("%w: launcher_memory_kill pid is %d", ErrMalformedFrame, f.PID)
+	case f.LimitBytes == 0:
+		return fmt.Errorf("%w: launcher_memory_kill carries no limitBytes", ErrMalformedFrame)
+	case len(f.Executable) > MemoryKillExecutableBytes:
+		return fmt.Errorf("%w: launcher_memory_kill executable is %d bytes, limit %d", ErrMalformedFrame, len(f.Executable), MemoryKillExecutableBytes)
+	case f.Cause != MemoryKillCauseGuard && f.Cause != MemoryKillCauseKernel && f.Cause != MemoryKillCauseKernelProtected:
+		return fmt.Errorf("%w: launcher_memory_kill cause is %q, not %q, %q or none",
+			ErrMalformedFrame, f.Cause, MemoryKillCauseKernel, MemoryKillCauseKernelProtected)
+	}
+	return nil
+}
+
 // Validate refuses an enrollment frame with no request id or no enrollment id: the daemon is its
 // only sender, so either is a bug to name.
 func (f AgentSecretsEnrollment) Validate() error {
@@ -1342,10 +1408,6 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[AdoptWorkingCopy](trimmed)
 	case TypeAdoptWorkingCopyResult:
 		return decodeInto[AdoptWorkingCopyResult](trimmed)
-	case TypeRescueUnpushed:
-		return decodeInto[RescueUnpushed](trimmed)
-	case TypeRescueUnpushedResult:
-		return decodeInto[RescueUnpushedResult](trimmed)
 	case TypeRPCChunk:
 		return decodeInto[RPCChunk](trimmed)
 	case TypeHello2:
@@ -1361,7 +1423,7 @@ func Decode(line []byte) (Frame, error) {
 	case TypeLauncherHello:
 		return decodeInto[LauncherHello](trimmed)
 	case TypeLauncherHelloAck:
-		return LauncherHelloAck{}, nil
+		return decodeInto[LauncherHelloAck](trimmed)
 	case TypeLauncherState:
 		return decodeInto[LauncherState](trimmed)
 	case TypeLauncherStart:
@@ -1382,6 +1444,8 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
+	case TypeLauncherMemoryKill:
+		return decodeInto[LauncherMemoryKill](trimmed)
 	case TypeLauncherLeakCheck:
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:

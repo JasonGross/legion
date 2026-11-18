@@ -8,7 +8,7 @@ import {
   gatedWrite,
   operandPath,
 } from "./askgate-marker";
-import { newAsks } from "./askgate-new-asks";
+import { newAskCount } from "./askgate-new-asks";
 import {
   commandHelp,
   commandName,
@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -191,7 +192,7 @@ export function fitOutput(
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696). Under Codex the session's id is
+ * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696). Under Codex the session's id is
  * `CODEX_THREAD_ID`, which Codex sets in every shell command it runs; no Codex hook can export a
  * variable into those shells, so the Codex plugin's own `dispatch` shim sets `DISPATCH_HOST=codex`,
  * and with `DISPATCH_HOST` unset a shell that carries `CODEX_THREAD_ID` and not
@@ -299,7 +300,12 @@ export async function runDispatchCli(
           [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
           USAGE
         )
-      : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
+      : refuse(
+          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+            .message,
+          USAGE,
+          parsed.tool
+        );
   }
 
   const hostName = ledgerHost();
@@ -426,17 +432,20 @@ export async function runDispatchCli(
         // The asks this write would open for a person, counted from the write's own text: the
         // one number pi-envoy's record of an unmarked write carries, so a session holding a
         // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
-        // The ledger carries the count and never the ask text. An upload's asks are in its file,
-        // whose bytes are already read above, and which the dry run's arguments name only by
-        // path. A re-upload's blocks are counted again: the write carries them.
+        // Each ask the call opens counts one; a `replace`'s `with`, which `newAsks` reads as
+        // every string the server might parse it as, counts as the most asks any one of those
+        // readings opens (`newAskCount`). The ledger carries the count and never the ask text.
+        // An upload's asks are in its file, whose bytes are already read above, and which the dry
+        // run's arguments name only by path. A re-upload's blocks are counted again: the write
+        // carries them.
         const asksCarried = spent.ok
           ? 0
-          : newAsks(
+          : newAskCount(
               parsed.tool,
               uploadBytes === undefined
                 ? parsed.args
                 : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
-            ).length;
+            );
         if (!spent.ok && gate.mode === "block") {
           return refuse(
             spent.changed === undefined

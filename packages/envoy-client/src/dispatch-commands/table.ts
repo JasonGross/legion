@@ -32,8 +32,10 @@ import {
   resultsCommand,
   searchCommand,
 } from "./issues";
+import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
+import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 
 /** Every command the contract names, so a command added there without a handler here fails to
@@ -75,6 +77,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),
   dispatch_edit_ask: acting(editAskCommand),
@@ -90,6 +93,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_doc_read: acting(docReadCommand),
   dispatch_request_approval: acting(requestApprovalCommand),
   dispatch_plan_approve: acting(planApproveCommand),
+  dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
   dispatch_artifact: acting(artifactCommand),

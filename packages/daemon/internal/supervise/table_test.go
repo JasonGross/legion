@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,7 +158,6 @@ func samples(t *testing.T) map[string][]Event {
 		"StalePlugin":          {StalePlugin{}},
 		"StallBackstop":        {StallBackstop{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
-		"PodUpdateReask":       {PodUpdateReask{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
 		"RequestReady":         {RequestReady{}},
@@ -242,6 +242,19 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 	}
 }
 
+// States is the one list of every state that a test outside this package walks, such as record's
+// test of the states the role-holder publication counts live. Those tests cannot read this
+// package's source, so this test holds the list to the ClaimState constants the compiler sees here
+// (sealed): a state added to the const block and left out of the list fails here, rather than
+// passing every walk of the list. Each state is in the list once.
+func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
+	_, declared, _ := sealed(t)
+	listed := States()
+	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
+	}
+}
+
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
 // delivery (confirmed while working, as a delivered turn leaves it).
@@ -313,11 +326,9 @@ func fenced(ev Event, c Claim) Event {
 	case PodUpdateSignalled:
 		return PodUpdateSignalled{Claim: c.Token, Generation: c.Generation, Session: session, Head: "deadbeef"}
 	case PodUpdateOpen:
-		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image", Task: UpdateTask(PodRound("a-pod-uid"), "image")}
+		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image"}
 	case PodUpdateEnded:
 		return PodUpdateEnded{Claim: c.Token}
-	case PodUpdateReask:
-		return PodUpdateReask{Claim: c.Token, Round: PodRound("a-pod-uid")}
 	case RequestSpawn:
 		return RequestSpawn{Claim: c.Token}
 	case RequestRegister:

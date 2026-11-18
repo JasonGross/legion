@@ -94,27 +94,29 @@ type commandEntry struct {
 }
 
 var commands = map[string]commandEntry{
-	"version":        {runVersion, "print the version and the commit the binary was built from"},
-	"start":          {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
-	"stop":           {runStop, "stop the daemon registered for legion.yaml's project"},
-	"state":          {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
-	"legions":        {runLegions, "list the daemons registered on this machine"},
-	"status":         {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
-	"restart":        {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
-	"claude-bridge":  {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
-	"worker-shim":    {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
-	"launcher":       {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
-	"model-token":    {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
-	"claims":         {runClaims, "the operator's hand on the daemon's claims"},
-	"sessions":       {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
-	"probe-boot":     {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
-	"probe-image":    {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
-	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
-	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
-	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
-	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
-	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
-	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
+	"version":          {runVersion, "print the version and the commit the binary was built from"},
+	"config-reference": {runConfigReference, "print legion.yaml's key table as JSON: every top-level key with its default, whether it is required and what it does, and the described nested keys under it"},
+	"start":            {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
+	"stop":             {runStop, "stop the daemon registered for legion.yaml's project"},
+	"state":            {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
+	"legions":          {runLegions, "list the daemons registered on this machine"},
+	"status":           {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
+	"restart":          {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
+	"claude-bridge":    {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
+	"worker-shim":      {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
+	"launcher":         {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
+	"model-token":      {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
+	"claims":           {runClaims, "the operator's hand on the daemon's claims"},
+	"sessions":         {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
+	"probe-boot":       {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
+	"probe-image":      {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
+	"workspace-init":   {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
+	"skills-check":     {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
+	"controller":       {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
+	"git-credential":   {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"git":              {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
+	"gh":               {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
+	"leak-check":       {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
 
 // helpRequested says whether a command's first argument asks for its usage.
@@ -628,9 +630,12 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
 	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
-	fmt.Fprintln(stdout, memorySummary(state.Issues))
+	for _, line := range experimentLines(state.Settings, state.Daemon.Project, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
+	fmt.Fprintln(stdout, mergeWaitsSummary(mergeWaits(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, entrySummary(state.Issues))
@@ -663,8 +668,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-// blockedSummary is the one line an operator reads for the issues Legion is waiting to start
-// behind a Dispatch issue nobody has finished (api.Admission.Blocked): how many, and each by
+// blockedSummary is the one line an operator reads for the issues Legion waits on a Dispatch
+// issue nobody has finished for (api.Admission.Blocked), the ones it has still to start and the
+// ones it started that gave their slot back for the wait: how many, and each by
 // issue with what it waits on, in the state's own key order. Nothing here is the daemon's to
 // clear — a blocker is finished in Dispatch by a person — so the line names them and stops.
 func blockedSummary(blocked []api.BlockedIssue) string {
@@ -775,42 +781,129 @@ func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
 // `legion state --json`.
 const waitingLineNamedCap = 10
 
-// memorySummary is the one line an operator reads for the memory groups the project's work was
-// drawn into: how many issues carry a draw at all, and how many of those under each group and
-// mode, in group and then mode order, so two runs over one state print one line.
+// experimentLines are the lines an operator reads for the experiments the deployment declares
+// (the daemon's own project): one per experiment, in the order the daemon's loader declares
+// them — the `memory` block's experiment first, then the `experiments` key's own in the file's
+// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues were drawn each arm
+// of it. An experiment no issue was drawn an arm of is `none` after its name, as a deployment
+// that has drawn nothing has always read.
 //
-// It counts issues, and not the trees the draw is made for, because the state carries no tree: a
-// draw would have to stand for its tree, and it cannot. Every issue of a tree carries its root's
-// draw, and a tree handed over as one of its own carries its old tree's draw verbatim — the
-// group, the mode and the instant alike — so two trees share one draw and no draw is a tree's
-// name. It names no issue either: the per-issue values are in `legion state --json`, where a line
-// per issue would print hundreds on a live deployment.
-func memorySummary(issues map[string]api.Issue) string {
-	type groupMode struct{ group, mode string }
-	counts := map[groupMode]int{}
-	drawn := 0
+// It counts only the rows that record a draw, which are the rows that carry an instant
+// (api.AssignmentView's DrawnAt), and leaves out a row a hand-over settled at no arm — no
+// variant, no mode and no instant — for every experiment alike, as internal/projection's
+// memoryOf leaves that row out of an issue's three memory fields. So the `memory` experiment's
+// line counts the issues the memory line counted before any experiment was declared, the
+// issues whose `memoryGroup` is set.
+//
+// The list is built from the settings and not from `settings.projects.<KEY>.experiments` alone,
+// because the two keys a project declares an experiment with are carried apart there: a
+// deployment that writes the `memory` block and no `experiments` key — which is what this fleet
+// runs — declares one experiment and carries an empty `experiments`, and reading that key alone
+// would print `experiments: none` while every issue holds a memory assignment.
+//
+// It counts issues, and not the trees a tree experiment is drawn for, because the state shows
+// every draw on the issues it applies to. Each issue's `assignments` holds its tree's tree-unit
+// rows and its own issue-unit rows: a tree row is the whole tree's answer, which every issue of
+// the tree is shown (internal/projection's assignmentViews). So one count, of issues, serves an
+// experiment of either unit. A count of trees, read off api.Issue.Tree, would fit a tree
+// experiment alone, and even there it would not count draws. A child handed over as a tree of its
+// own becomes the root of its own tree (internal/admit's readmit sets its Tree to its own key),
+// and it carries its old tree's tree-unit rows verbatim — the arm, the mode and the instant alike
+// (record.Postgres.CarryAssignments) — so two trees hold one draw. It names no issue either: the
+// per-issue answers are in `legion state --json`, where a line per issue would print hundreds on
+// a live deployment.
+//
+// Every project declares at least the memory experiment, so there is always a line: a project
+// whose settings carry no `memory` block and no experiment of its own declares that one at mode
+// off (config.Project.ExperimentsDeclared), and its line counts the arms its issues hold —
+// `memory: none` for a deployment that has drawn nothing yet, which is the line such a
+// deployment read before any experiment was declared.
+//
+// A daemon older than contract 141 serves no `assignments` on any issue, and that is the daemon an
+// operator who rolls the daemon back and keeps this `legion` reads. So an issue that carries no
+// `assignments` is counted from its memory fields instead (api.Issue.MemoryGroup and
+// MemoryDrawMode, which every daemon from contract 49 serves), under the `memory` experiment,
+// wherever its `memoryGroup` is set, as the memory line counted them before any experiment was
+// declared: its group, `memory` or `none`, is the arm and its mode the mode. Such a daemon's
+// settings carry the `memory` block and no `experiments` key, and a daemon that serves no
+// settings carries neither, so the list above declares the `memory` experiment alone and the
+// line is the one a `legion` without this change prints for the same body. A daemon of this
+// release serves the memory fields only where an issue's `memory` row records a draw, and serves
+// that row in `assignments` as well to every caller but a pod below contract 141 (api's stateFor),
+// so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
+// either and the fallback counts nothing; in the body it serves such a pod it counts the `memory`
+// draws.
+func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
+	declared := settings.Projects[project].DeclaredExperiments(project)
+	counts := make(map[string]map[armDraw]int, len(declared))
+	count := func(experiment string, draw armDraw) {
+		held, counted := counts[experiment]
+		if !counted {
+			held = map[armDraw]int{}
+			counts[experiment] = held
+		}
+		held[draw]++
+	}
 	for _, issue := range issues {
-		if issue.MemoryGroup == "" {
+		if len(issue.Assignments) == 0 {
+			if issue.MemoryGroup != "" {
+				count(config.MemoryExperimentName, armDraw{variant: issue.MemoryGroup, mode: issue.MemoryDrawMode})
+			}
 			continue
 		}
-		drawn++
-		counts[groupMode{group: issue.MemoryGroup, mode: issue.MemoryDrawMode}]++
+		for _, assignment := range issue.Assignments {
+			if assignment.DrawnAt == nil {
+				continue
+			}
+			count(assignment.Experiment, armDraw{variant: assignment.Variant, mode: assignment.Mode})
+		}
 	}
-	if drawn == 0 {
-		return "memory: none"
+	lines := make([]string, len(declared))
+	for i, experiment := range declared {
+		lines[i] = experimentLine(experiment.Name, counts[experiment.Name])
 	}
-	kinds := slices.SortedFunc(maps.Keys(counts), func(a, b groupMode) int {
-		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.mode, b.mode))
+	return lines
+}
+
+// armDraw is what one experiment line counts issues by: the arm an issue was drawn and the mode
+// it was drawn under (api.AssignmentView's Variant and Mode).
+type armDraw struct{ variant, mode string }
+
+// label is how the line names the arm: its own name, or `none` for the empty arm, which is the
+// arm an experiment at mode off draws.
+func (d armDraw) label() string {
+	if d.variant == "" {
+		return "none"
+	}
+	return d.variant
+}
+
+// experimentLine is one experiment's line: how many issues were drawn an arm of it, and how many
+// of those under each arm and mode, `N <arm> (<mode>)`, in the order of the arm's printed name
+// and then of the mode, so two runs over one state print one line. The `memory` experiment's two
+// arms are `memory` and `none` (config.MemoryVariantNames), the two memory groups, so its line is
+// word for word the one `legion state` printed for the memory groups before any experiment was
+// declared.
+func experimentLine(name string, counts map[armDraw]int) string {
+	held := 0
+	for _, count := range counts {
+		held += count
+	}
+	if held == 0 {
+		return name + ": none"
+	}
+	draws := slices.SortedFunc(maps.Keys(counts), func(a, b armDraw) int {
+		return cmp.Or(cmp.Compare(a.label(), b.label()), cmp.Compare(a.mode, b.mode))
 	})
-	named := make([]string, len(kinds))
-	for i, kind := range kinds {
-		named[i] = fmt.Sprintf("%d %s (%s)", counts[kind], kind.group, kind.mode)
+	named := make([]string, len(draws))
+	for i, draw := range draws {
+		named[i] = fmt.Sprintf("%d %s (%s)", counts[draw], draw.label(), draw.mode)
 	}
 	noun := "issues"
-	if drawn == 1 {
+	if held == 1 {
 		noun = "issue"
 	}
-	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
+	return fmt.Sprintf("%s: %d %s — %s", name, held, noun, strings.Join(named, ", "))
 }
 
 // awaitingSummary is the one line an operator reads for the roots that wait on a person
@@ -923,6 +1016,105 @@ func checksSummary(checks []issueCheck) string {
 	}
 	return fmt.Sprintf("open production checks: %d; the oldest, %s #%d at %s, worked by the %s, %s, next look %s",
 		len(checks), oldest.issue, oldest.check.PullRequest, merge, oldest.check.Role, look, oldest.check.NextWakeAt.UTC().Format(time.RFC3339))
+}
+
+// issueMergeWait is one review round's wait on GitHub (api.MergeWaitView) with the issue it
+// belongs to and that issue's pull request, which is where the number the line names comes from.
+type issueMergeWait struct {
+	issue string
+	wait  api.MergeWaitView
+	pull  *api.PullRequestView
+}
+
+// mergeWaits is every review round of the state's issues that waits on GitHub's merge state for
+// the head its reviewer's approval stands on (api.MergeWaitView), oldest head first and then by
+// issue key, so the oldest is the one named whatever order the map came in. Oldest is the head
+// that has stood longest, the smallest `headUpdatedAt`, because the wait an operator must act on
+// is the one a head has sat through, not the one the daemon last read.
+func mergeWaits(issues map[string]api.Issue) []issueMergeWait {
+	var waits []issueMergeWait
+	for key, issue := range issues {
+		if issue.MergeWait != nil {
+			waits = append(waits, issueMergeWait{issue: key, wait: *issue.MergeWait, pull: issue.PullRequest})
+		}
+	}
+	slices.SortFunc(waits, func(a, b issueMergeWait) int {
+		return cmp.Or(olderHead(a.wait.HeadUpdatedAt, b.wait.HeadUpdatedAt), cmp.Compare(a.issue, b.issue))
+	})
+	return waits
+}
+
+// olderHead orders two rounds by the moment their head was last updated, oldest first, and sorts
+// a round whose record holds no such moment last however long it may have been there: an unknown
+// time is no evidence of age, and a round the daemon knows no time for would otherwise be named
+// the oldest ahead of every round it does know one for. Two rounds with no time are equal here,
+// and the issue key decides between them.
+func olderHead(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	}
+	return a.Compare(*b)
+}
+
+// mergeWaitsSummary is the one line an operator reads for the review rounds waiting on GitHub's
+// merge state for their head: how many, and the oldest head — its issue, pull request and head,
+// and what the record holds of the daemon's last read of that head. The line says "the oldest
+// head" rather than "the oldest" because the order is the head's (`headUpdatedAt`, mergeWaits
+// above) and the only moment the line prints is the read's: a reader told "the oldest" takes the
+// time beside it for the reason the round was chosen, and the round named is routinely the one
+// read most recently. It is printed beside the open production checks because both are work that
+// has left the agents and stands on something outside Legion.
+//
+// What follows the head is one reading, chosen by the one switch below over whether the wait
+// carries a merge state and whether it carries the moment of the read, and that switch is the
+// whole model: there are four readings and no other, and each says what the record holds rather
+// than what did or did not happen at GitHub, so only a reading with a state on record says
+// `GitHub said`. `GitHub said <state>, read <time>` is a wait holding a merge state for this head
+// and the moment of the read that gave it, in UTC. `GitHub said <state>, read time not recorded`
+// is a wait holding a merge state and no moment of the read: the time is what the record lacks,
+// so the line never says no read was made. `read <time> with no merge state` is a wait holding the
+// moment of a read and no merge state, so the line names the read rather than claiming no answer
+// came. `no read recorded for this head` is a wait holding neither: no merge state and no read
+// time for the head the wait names, and `record.PullRequest.StateReadAt`'s doc says when that is.
+//
+// The pull request number is the issue's own view of it. An issue that carries a merge wait and
+// no pull request view cannot happen — the daemon builds the wait from the pull request record,
+// so there is a record to build the view from as well — but this prints a daemon's answer, which
+// an older or a newer contract may shape otherwise, and a line that panicked on it would take
+// the whole command down over one issue: such a round is named `#unrecorded` and is read like any
+// other.
+func mergeWaitsSummary(waits []issueMergeWait) string {
+	if len(waits) == 0 {
+		return "merge waits: none"
+	}
+	oldest := waits[0]
+	head := oldest.wait.WaitsOn
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	number := "unrecorded"
+	if oldest.pull != nil {
+		number = strconv.Itoa(oldest.pull.Number)
+	}
+	var reading string
+	state, at := oldest.wait.MergeState, oldest.wait.StateReadAt
+	switch {
+	case state != "" && at != nil:
+		reading = "GitHub said " + state + ", read " + at.UTC().Format(time.RFC3339)
+	case state != "":
+		reading = "GitHub said " + state + ", read time not recorded"
+	case at != nil:
+		reading = "read " + at.UTC().Format(time.RFC3339) + " with no merge state"
+	default:
+		reading = "no read recorded for this head"
+	}
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, %s",
+		len(waits), oldest.issue, number, head, reading)
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
@@ -1091,61 +1283,104 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
 }
 
-// entryBehind is one issue whose role has not been given the work its phase entry names: the
-// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
-// of), the entry that role's phases row stands on and the entry it was given.
+// entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
+// named for, the entry the phases row of the role of its current phase stands on and the entry
+// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
+// architect, the arms the state names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
-	entry int64
-	given int64
+	// numbered is whether entry and given are role's own, which they are for every row but the
+	// architect of a root past the phases its architect works, where they are that phase's
+	// worker's and the line leaves them off the architect.
+	numbered     bool
+	entry, given int64
+	// arms is every arm of the daemon's architect-stalled reading the state names for this root
+	// (api.Issue.ArchitectStalls), and empty for the worker of an issue that is not its tree's
+	// root, whose two numbers differ, which the difference names instead.
+	arms []record.ArchitectStallArm
 }
 
-// entriesBehind is every issue of the state whose two entry numbers differ
-// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
-// phase worker role carries neither number, so it is never named here: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the
-// line.
+// entriesBehind is every issue of the state the plain line names, by issue key: a tree's own root
+// the state names an arm of the architect-stalled reading for (api.Issue.ArchitectStalls), as its
+// architect, and an issue that is not its tree's root whose phase worker has not been given the
+// work its phase entry names (api.Issue.PhaseEntry and GivenEntry). The daemon reads the arms by
+// the predicates its own wake uses and serves them whether or not the controller was told, so
+// this reads no arm of its own.
+//
+// A root is named for the arms alone, whatever role works the phase it stands in
+// (dispatch://INFRA-2614, R6): every root reads as behind for the moments between a transition
+// and its delivery, so the difference alone would name a healthy root at every read. A root is an
+// issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
+// past its architect's phases are its phase worker's, which the line names for no root. The
+// numbers are named for the role a phase worker works on any other issue, which is
+// dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
+// phase.RoleFor names the architect's phase, is named for nothing. An issue whose current phase
+// names no role at all carries neither number and is never named for them: the projection writes
+// them only where phase.RoleFor names a role, and that is the role this reads back for the line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
-		if issue.PhaseEntry == issue.GivenEntry {
+		role := phase.RoleFor(issue.Phase)
+		if legionclaim.IsTreeRoot(key, issue.Tree) {
+			if len(issue.ArchitectStalls) == 0 {
+				continue
+			}
+			row := entryBehind{issue: key, role: legionclaim.RoleArchitect, arms: issue.ArchitectStalls}
+			if role == legionclaim.RoleArchitect {
+				row.numbered, row.entry, row.given = true, issue.PhaseEntry, issue.GivenEntry
+			}
+			behind = append(behind, row)
 			continue
 		}
-		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
-			entry: issue.PhaseEntry, given: issue.GivenEntry})
+		if role == "" || role == legionclaim.RoleArchitect || issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: role, numbered: true, entry: issue.PhaseEntry, given: issue.GivenEntry})
 	}
 	return behind
 }
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
-// their phase entry names: how many, and each by issue and role with the two numbers. A
-// difference here is one of four things. An entry raised seconds ago, which the next pass
-// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
-// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
-// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
-// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
-// line is named here, and its difference stands for as long as it waits, which is hours on a
-// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
-// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
-// the difference reads for the rest of that turn and closes on the first pass after the task is
-// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
-// states each skip), whose difference stands until something outside that pass moves it.
+// their phase entry names and for the roots a wake names: how many, and each by issue and role
+// with the two numbers where they are that role's, a root with the words of each arm the state
+// names for it (record.ArchitectStallArm.Words, the words the wake's reason begins with). For a
+// role a phase worker works on an issue that is not its tree's root, a difference here is one of
+// four things. An entry raised seconds ago, which the next pass closes: the daemon sends that
+// entry's work on every admission pass and on a sweep of its own each minute (admit's
+// resumeSlottedWorkers). An issue waiting for its admission slot, whose start row the outbox holds
+// unclaimable until the slot comes (workflow.StartOrOwe) and which the pass passes over, since it
+// reads the slotted issues alone — every such issue in the waiting line is named here, and its
+// difference stands for as long as it waits, which is hours on a full cap. A claim whose worker is
+// still working an earlier entry's task, which the pass passes over while that delivery is
+// worked: a start the slot held back reaches its worker mid-turn, so the difference reads for the
+// rest of that turn and closes on the first pass after the task is retired. Or a role the pass
+// skips and sends nothing to at all (admit's owedEntryRoles, which states each skip), whose
+// difference stands until something outside that pass moves it.
 //
 // The daemon's own "a role was behind the entry its phases row names" log line names the roles
-// that pass sends the work to and no others, so a difference of that last kind is read here and
-// nowhere else.
+// that pass sends the work to and no others, so a difference of that last kind on such an issue is
+// read here and nowhere else. A root is named for the arms the state serves instead
+// (entriesBehind), whatever its numbers say.
 func entrySummary(issues map[string]api.Issue) string {
 	behind := entriesBehind(issues)
 	if len(behind) == 0 {
-		return "roles not given their phase entry: none"
+		return "roles not given their phase entry, and roots a wake names: none"
 	}
 	named := make([]string, len(behind))
 	for i, row := range behind {
-		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+		parts := make([]string, 0, 2+len(row.arms))
+		if row.numbered {
+			parts = append(parts, fmt.Sprintf("entry %d", row.entry), fmt.Sprintf("given %d", row.given))
+		}
+		for _, arm := range row.arms {
+			parts = append(parts, arm.Words())
+		}
+		named[i] = fmt.Sprintf("%s %s: %s", row.issue, row.role, strings.Join(parts, ", "))
 	}
-	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+	return fmt.Sprintf("roles not given their phase entry, and roots a wake names: %d — %s",
+		len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

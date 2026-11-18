@@ -74,15 +74,23 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 // keepPass is one pass of the keeper, through the client's current JetStream context. A bucket of
 // buckets that does not exist yet, one the program opens only for a feature it has not configured,
 // is skipped without a line: the program creates it at the deployment's copies when it opens it.
-// Each pass reads the live connection's server version for itself (serverDefaultsAnUnsetCap), so
-// a stream with no consumer cap, which an older server leaves unlimited and this binary
-// therefore leaves alone, is raised at the first pass after the server it is connected to has
-// been upgraded to one that caps such a stream at a default of its own. A pass with no live
-// connection reads an empty version, which is no such server, and a pass runs only while the
-// client is connected (keep).
+// Each pass reads the live connection's server version for itself, once the connection reports
+// one (connectedDefaultsAnUnsetCap), so a stream with no consumer cap, which an older server
+// leaves unlimited and this binary therefore leaves alone, is raised at the first pass after the
+// server it is connected to has been upgraded to one that caps such a stream at a default of its
+// own. A pass whose connection reports no version until the client stops or
+// natsversion.VersionWait passes keeps nothing of the stream that pass and logs why, since an
+// empty version is no reading of the server; a pass runs only while the client is connected
+// (keep).
 func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
+	ctx, cancel := c.untilStopped()
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, c.Connection())
+	cancel()
 	js := c.JS()
-	restored, err := keepStream(js, cfg, serverDefaultsAnUnsetCap(c.Connection().ConnectedServerVersion()))
+	var restored []string
+	if err == nil {
+		restored, err = keepStream(js, cfg, defaultsAnUnsetCap)
+	}
 	switch {
 	case err != nil && c.stopped():
 		return
@@ -145,13 +153,19 @@ func (c *Client) awaitKeeper() {
 // role lanes it leaves to a start, sending nothing and returning an error when it needs anything:
 // only a start moves the role lanes off the stream, their consumers' filters first
 // (migrateRoleLanesOffStream), and a write of the list the keeper read could put them back after a
-// start removed them. An update whose answer never came succeeds when the stream, read again,
-// needs nothing more, and one the server refused as overlapping the stream itself is sent again
-// until the stream needs nothing more or its sends run out (updateStream).
+// start removed them. A stream stamped with a generation higher than streamConfigGeneration
+// belongs to a newer build and is left exactly as it is, as a start leaves it
+// (ensureStreamWithConfig), so the two builds a release runs at once never put their own settings
+// back in turn. An update whose answer never came succeeds when the stream, read again, needs
+// nothing more, and one the server refused as overlapping the stream itself is sent again until
+// the stream needs nothing more or its sends run out (updateStream).
 func keepStream(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
 		return nil, err
+	}
+	if MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration {
+		return nil, nil
 	}
 	kept := keptStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(kept, info.Config) {

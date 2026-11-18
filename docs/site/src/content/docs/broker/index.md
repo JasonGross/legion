@@ -49,6 +49,7 @@ sequenceDiagram
     participant CLI as agent-secrets
     participant Helper as agent-secrets-helper
     participant Broker as Secrets Broker
+    participant GitHub
     participant Model as The judge's model
     participant Dispatch
     actor Person as Approver
@@ -60,6 +61,16 @@ sequenceDiagram
     alt granted at once
         Broker-->>CLI: granted
     else a person must approve
+        opt the request carries a GitHub App narrowing
+            Broker->>GitHub: list the App's installations, to check the account
+            GitHub-->>Broker: the installations, or none on that account
+            opt the narrowing names repositories or read access
+                Broker->>GitHub: mint the token the release would mint, to check the narrowing
+                GitHub-->>Broker: that token, or a refusal of the narrowing
+                Broker->>GitHub: revoke that token at once
+            end
+            Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
+        end
         Broker-->>CLI: pending, the approver its record names, and its page on the broker
         opt the airlock rules let the judge decide this secret
             Broker->>Dispatch: is the issue the request's reason names open?
@@ -78,6 +89,16 @@ sequenceDiagram
     CLI->>Agent: run ./deploy.sh with DEMO_API_KEY in its environment
 ```
 
+The GitHub step is there only for a request that carries a GitHub App narrowing, which
+`agent-secrets` sends with the request. The broker decides such a narrowing before the approval
+request, and nothing is written and nobody is asked where it refuses one. It refuses five
+things: an account the secret's `github-owners` tag does not list, a request that names no
+GitHub App secret, a name the airlock holds back, a narrowing GitHub itself refuses, and an
+account the App has no installation on. Where it reaches no verdict, for example because GitHub
+is out of reach or refuses the App itself, or because the check passes its own time bounds, the
+request waits for its approver as it did before, and the refusal comes when the grant is read
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
+
 The judge's step is there only where a deployment configures one. It takes a narrow class of the
 requests that wait: one secret, a lifetime of 15 minutes or less that the secret's airlock rules
 entry lets the judge decide, and a signed reason naming a Dispatch issue that is not done. It
@@ -95,7 +116,7 @@ container](/legion/broker/guides/run-an-agent-in-a-container/) shows a box's set
 | Piece | What it does | Where it runs |
 | --- | --- | --- |
 | Secrets Broker (`envoy-broker`) | Enrolls sessions, decides each request from the secret's owner and tier, records requests and decisions, and releases granted values. | One or more identical stateless processes behind one address, beside Postgres and the secret store. |
-| `agent-secrets` | The command an agent runs to use a secret, the tool people and launchers use to log machines in and inspect sessions, the tool people list and revoke their machine logins and live grants with (`machine list`, `grant list`), and the tool people manage the secrets themselves with, under their own cloud sign-in. | Wherever agents run, and a person's own machine. |
+| `agent-secrets` | The command an agent runs to use a secret, the tool people and launchers use to log machines in and inspect sessions, the tool people list and revoke their machine logins and live grants with (`machine list`, `grant list`), and the tool that manages the secrets themselves, under whatever cloud credential the store's IAM lets write them. | Wherever agents run, and a person's own machine. |
 | `agent-secrets-helper` | A per-user daemon that holds each host agent session's key, enrolls it, and signs for it. | Each machine that runs agents directly. |
 | Dispatch | Shows people the requests waiting on them, each secret request linking to its page on the broker; takes a machine login's typed code and relays the person's decision; lists the grants people can revoke; and answers the broker's judge with the issue a request's reason names and that issue's spec document. | Dispatch's server and web app. |
 | Legion | Enrolls every worker pod it runs on Kubernetes, so a phase worker can use `agent-secrets` like any other session. | Legion's daemon. |

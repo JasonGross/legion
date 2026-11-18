@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
@@ -122,43 +124,6 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"failed adopt-working-copy-result",
 			`{"type":"adopt-working-copy-result","id":"r4","ok":false,"error":"no workspace"}`,
 			AdoptWorkingCopyResult{ID: "r4", OK: false, Error: "no workspace"},
-		},
-		{
-			"rescue-unpushed",
-			`{"type":"rescue-unpushed","id":"r5","branch":"legion/LEGION-484-rescue-9d3f0c7a","workspaceTimeoutMs":120000,"timeoutMs":300000}`,
-			RescueUnpushed{ID: "r5", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000},
-		},
-		{
-			"rescue-unpushed-result",
-			`{"type":"rescue-unpushed-result","id":"r5","ok":true,"workspaces":[{"dir":"/legion/workspaces/acme/widgets/legion-484","status":"rescued","branches":[{"name":"legion/LEGION-484-rescue-9d3f0c7a-1","commit":"c0ffee"}]},{"dir":"/legion/workspaces/acme/widgets/legion-485","status":"error","error":"push refused"}]}`,
-			RescueUnpushedResult{ID: "r5", OK: true, Workspaces: []RescueWorkspace{
-				{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: "rescued", Branches: []RescueBranch{{Name: "legion/LEGION-484-rescue-9d3f0c7a-1", Commit: "c0ffee"}}},
-				{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: "error", Error: "push refused"},
-			}},
-		},
-		{
-			// A daemon that names the issue's one rescue branch sends it beside the pod's own
-			// prefix, which an older shim reads alone.
-			"rescue-unpushed naming the issue's one rescue branch",
-			`{"type":"rescue-unpushed","id":"r6","branch":"legion/LEGION-484-rescue-9d3f0c7a","target":"legion/LEGION-484-rescue","workspaceTimeoutMs":120000,"timeoutMs":300000}`,
-			RescueUnpushed{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", Target: "legion/LEGION-484-rescue", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000},
-		},
-		{
-			// One branch this check moved forward, with the commits its push added, and one an
-			// earlier check pushed and this one did not, with the commit only it holds.
-			"rescue-unpushed-result carrying each branch's commits",
-			`{"type":"rescue-unpushed-result","id":"r6","ok":true,"workspaces":[` +
-				`{"dir":"/legion/workspaces/acme/widgets/legion-484","status":"rescued","branches":[{"name":"legion/LEGION-484-rescue","commit":"c0ffee","previous":"decade","pushed":true,"commits":[{"id":"c0ffee","subject":"rescue: LEGION-484"},{"id":"beef01","subject":"fix the widget"}]}]},` +
-				`{"dir":"/legion/workspaces/acme/widgets/legion-485","status":"rescued","branches":[{"name":"legion/LEGION-485-rescue","commit":"facade","commits":[{"id":"facade"}]}]}]}`,
-			RescueUnpushedResult{ID: "r6", OK: true, Workspaces: []RescueWorkspace{
-				{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: "rescued", Branches: []RescueBranch{{
-					Name: "legion/LEGION-484-rescue", Commit: "c0ffee", Previous: "decade", Pushed: true,
-					Commits: []RescueCommit{{ID: "c0ffee", Subject: "rescue: LEGION-484"}, {ID: "beef01", Subject: "fix the widget"}},
-				}}},
-				{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: "rescued", Branches: []RescueBranch{{
-					Name: "legion/LEGION-485-rescue", Commit: "facade", Commits: []RescueCommit{{ID: "facade"}},
-				}}},
-			}},
 		},
 		{
 			"rpc_chunk",
@@ -482,87 +447,6 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
 	}
-	rescue := RescueUnpushed{ID: "r5", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 1, TimeoutMs: 2}
-	if err := rescue.Validate(); err != nil {
-		t.Fatalf("RescueUnpushed.Validate: %v", err)
-	}
-	targeted := rescue
-	targeted.Target = "legion/INFRA-1-rescue"
-	if err := targeted.Validate(); err != nil {
-		t.Fatalf("RescueUnpushed.Validate of a frame naming the issue's one rescue branch: %v", err)
-	}
-	for _, tc := range []struct {
-		name  string
-		frame RescueUnpushed
-	}{
-		{"no id", RescueUnpushed{Branch: rescue.Branch, WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"a branch outside legion/", RescueUnpushed{ID: "r5", Branch: "main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"a branch a refspec misreads", RescueUnpushed{ID: "r5", Branch: "legion/x:refs/heads/main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"no workspace bound", RescueUnpushed{ID: "r5", Branch: rescue.Branch, TimeoutMs: 2}},
-		{"a workspace bound above the whole", RescueUnpushed{ID: "r5", Branch: rescue.Branch, WorkspaceTimeoutMs: 3, TimeoutMs: 2}},
-		{"a target with a space", RescueUnpushed{ID: "r5", Branch: rescue.Branch, Target: "legion/INFRA-1 rescue", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"a target with ..", RescueUnpushed{ID: "r5", Branch: rescue.Branch, Target: "legion/../main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-	} {
-		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
-			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
-		}
-	}
-}
-
-// rescueUnpushedBeforeTarget is RescueUnpushed as a shim built before the issue's one rescue
-// branch decodes it: the frame's four fields at 9542c6fbbe, with no target among them.
-type rescueUnpushedBeforeTarget struct {
-	ID                 string `json:"id"`
-	Branch             string `json:"branch"`
-	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
-	TimeoutMs          int    `json:"timeoutMs"`
-}
-
-// rescueBranchBeforeCommits is RescueBranch as a daemon built before the branch's commits decodes
-// it.
-type rescueBranchBeforeCommits struct {
-	Name   string `json:"name"`
-	Commit string `json:"commit"`
-}
-
-// A shim built before the issue's one rescue branch reads a rescue-unpushed as four fields and
-// drops the rest, and it reports every remote branch that starts with `<branch>-` as its own. So
-// the frame keeps the pod's own prefix in branch, and the one branch rides in target, which that
-// shim never sees: with the one branch's name in branch, it would report every earlier pod's
-// rescue branches as this pod's. The report's new fields cross the other way, to a daemon built
-// before them, which reads the name and the commit as it always has.
-func TestARescueUnpushedFrameReadByAnOlderShimKeepsThePerPodPrefix(t *testing.T) {
-	frame := RescueUnpushed{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", Target: "legion/LEGION-484-rescue",
-		WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
-	line, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal(%#v): %v", frame, err)
-	}
-	if !strings.Contains(string(line), `"target":"legion/LEGION-484-rescue"`) {
-		t.Fatalf("the frame is %s, want it to carry the issue's one rescue branch in target", line)
-	}
-	var old rescueUnpushedBeforeTarget
-	if err := json.Unmarshal(line, &old); err != nil {
-		t.Fatalf("an older shim's decode of %s: %v", line, err)
-	}
-	want := rescueUnpushedBeforeTarget{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
-	if old != want {
-		t.Fatalf("an older shim read %s as %+v, want %+v: the pod's own prefix in branch, the target dropped", line, old, want)
-	}
-
-	branch := RescueBranch{Name: "legion/LEGION-484-rescue", Commit: "c0ffee", Previous: "decade", Pushed: true,
-		Commits: []RescueCommit{{ID: "c0ffee", Subject: "rescue: LEGION-484"}}}
-	line, err = json.Marshal(branch)
-	if err != nil {
-		t.Fatalf("Marshal(%#v): %v", branch, err)
-	}
-	var read rescueBranchBeforeCommits
-	if err := json.Unmarshal(line, &read); err != nil {
-		t.Fatalf("an older daemon's decode of %s: %v", line, err)
-	}
-	if read != (rescueBranchBeforeCommits{Name: branch.Name, Commit: branch.Commit}) {
-		t.Fatalf("an older daemon read %s as %+v, want the branch's name and commit", line, read)
-	}
 }
 
 func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
@@ -681,6 +565,322 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 		}
 		if decoded.FrameType() != frame.FrameType() || !reflect.DeepEqual(decoded, frame) {
 			t.Fatalf("decoded %#v from %s, want %#v", decoded, line, frame)
+		}
+	}
+}
+
+// memoryGuardAckLine is the acknowledgement of a daemon that sends the guard its settings, as it
+// crosses the wire.
+const memoryGuardAckLine = `{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100}}`
+
+// memoryKillLine is a launcher's report of one kill, as it crosses the wire.
+const memoryKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+	`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z"}`
+
+func memoryKill() LauncherMemoryKill {
+	return LauncherMemoryKill{
+		Guard: "3f2a9c1d5e7b8a60", Sequence: 1, PID: 4242, Executable: "python3",
+		SizeBytes: 1000 << 20, ReadingBytes: 3600 << 20, CounterBytes: 3900 << 20, LimitBytes: 4 << 30,
+		At: time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC),
+	}
+}
+
+// Both of the guard's frames cross the wire whole, through the writer and the reader a launcher
+// and the daemon speak, and decode to their own type with every member.
+func TestMemoryGuardFramesRoundTripThroughTheWire(t *testing.T) {
+	for _, tc := range []struct {
+		frame Frame
+		line  string
+	}{
+		{LauncherHelloAck{MemoryGuard: &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}}, memoryGuardAckLine},
+		{memoryKill(), memoryKillLine},
+	} {
+		t.Run(tc.frame.FrameType(), func(t *testing.T) {
+			var wire bytes.Buffer
+			if err := NewWriter(&wire).WriteFrame(tc.frame); err != nil {
+				t.Fatal(err)
+			}
+			if wire.String() != tc.line+"\n" {
+				t.Fatalf("the writer wrote %s, want %s", wire.String(), tc.line)
+			}
+			line, err := NewReader(&wire).ReadLine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := Decode(line)
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			if !reflect.DeepEqual(decoded, tc.frame) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, tc.frame)
+			}
+			err = nil
+			switch frame := decoded.(type) {
+			case LauncherHelloAck:
+				err = frame.MemoryGuard.Validate()
+			case LauncherMemoryKill:
+				err = frame.Validate()
+			}
+			if err != nil {
+				t.Fatalf("the decoded frame does not validate: %v", err)
+			}
+		})
+	}
+}
+
+// The acknowledgement of a daemon built before the guard, and of one whose deployment turned the
+// guard off, carries no member, and decodes with none: the launcher's guard turns off on that
+// absence. The empty acknowledgement every caller already builds is that same line.
+func TestMemoryGuardAnAcknowledgementWithNoMemberDecodesWithNone(t *testing.T) {
+	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, ok := decoded.(LauncherHelloAck)
+	if !ok || ack.MemoryGuard != nil {
+		t.Fatalf("decoded %#v, want a launcher_hello_ack with no memoryGuard", decoded)
+	}
+	line, err := json.Marshal(LauncherHelloAck{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != `{"type":"launcher_hello_ack"}` {
+		t.Fatalf("the empty acknowledgement encodes as %s", line)
+	}
+}
+
+// The bytes a daemon that sends the settings writes decode to those settings, which hold to the
+// ranges.
+func TestMemoryGuardTheAcknowledgementBytesDecode(t *testing.T) {
+	decoded, err := Decode([]byte(memoryGuardAckLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, ok := decoded.(LauncherHelloAck)
+	want := LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	if !ok || ack.MemoryGuard == nil || *ack.MemoryGuard != want {
+		t.Fatalf("decoded %#v, want the settings %+v", decoded, want)
+	}
+	if err := ack.MemoryGuard.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Each number of the settings is refused one below its minimum and one above its maximum, by a
+// refusal that names the member and its range, and taken at either bound. The defaults are inside
+// every range.
+func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
+	defaults := LauncherMemoryGuard{
+		ActPercent: MemoryGuardActDefault, FloorPercent: MemoryGuardFloorDefault,
+		WaitSeconds: MemoryGuardWaitDefault, IntervalMilliseconds: MemoryGuardIntervalDefault,
+	}
+	if err := defaults.Validate(); err != nil {
+		t.Fatalf("the defaults are refused: %v", err)
+	}
+	for _, tc := range []struct {
+		member string
+		lo, hi int
+		set    func(*LauncherMemoryGuard, int)
+	}{
+		{"actPercent", MemoryGuardActMin, MemoryGuardActMax, func(g *LauncherMemoryGuard, v int) { g.ActPercent = v }},
+		{"floorPercent", MemoryGuardFloorMin, MemoryGuardFloorMax, func(g *LauncherMemoryGuard, v int) { g.FloorPercent = v }},
+		{"waitSeconds", MemoryGuardWaitMin, MemoryGuardWaitMax, func(g *LauncherMemoryGuard, v int) { g.WaitSeconds = v }},
+		{"intervalMilliseconds", MemoryGuardIntervalMin, MemoryGuardIntervalMax, func(g *LauncherMemoryGuard, v int) { g.IntervalMilliseconds = v }},
+	} {
+		t.Run(tc.member, func(t *testing.T) {
+			for _, v := range []int{tc.lo, tc.hi} {
+				g := defaults
+				tc.set(&g, v)
+				if err := g.Validate(); err != nil {
+					t.Fatalf("%s %d is refused: %v", tc.member, v, err)
+				}
+			}
+			for _, v := range []int{tc.lo - 1, tc.hi + 1} {
+				g := defaults
+				tc.set(&g, v)
+				err := g.Validate()
+				want := fmt.Sprintf("memoryGuard.%s is %d, not between %d and %d", tc.member, v, tc.lo, tc.hi)
+				if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s %d: Validate = %v, want ErrMalformedFrame naming %q", tc.member, v, err, want)
+				}
+			}
+		})
+	}
+}
+
+// A kill report is refused where the daemon could not apply it once or tell a role of it: no
+// guard, a sequence below 1, no process, no limit, or an executable over its bound, which is
+// taken at the bound itself.
+func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
+	atBound := memoryKill()
+	atBound.Executable = strings.Repeat("c", MemoryKillExecutableBytes)
+	if err := atBound.Validate(); err != nil {
+		t.Fatalf("an executable of %d bytes is refused: %v", MemoryKillExecutableBytes, err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*LauncherMemoryKill)
+		want   string
+	}{
+		{"no guard", func(k *LauncherMemoryKill) { k.Guard = "" }, "carries no guard"},
+		{"sequence 0", func(k *LauncherMemoryKill) { k.Sequence = 0 }, "sequence is 0"},
+		{"pid 0", func(k *LauncherMemoryKill) { k.PID = 0 }, "pid is 0"},
+		{"a negative pid", func(k *LauncherMemoryKill) { k.PID = -1 }, "pid is -1"},
+		{"no limit", func(k *LauncherMemoryKill) { k.LimitBytes = 0 }, "carries no limitBytes"},
+		{"an executable over its bound", func(k *LauncherMemoryKill) { k.Executable = strings.Repeat("c", MemoryKillExecutableBytes+1) }, "executable is 257 bytes, limit 256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := memoryKill()
+			tc.change(&k)
+			err := k.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// kernelKillLine and kernelProtectedKillLine are a launcher's reports of one process the pod's
+// kernel stopped, a command of the role's and one of the processes that run its session, as they
+// cross the wire: the guard's report with the cause last.
+const (
+	kernelKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel"}`
+	kernelProtectedKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel-protected"}`
+)
+
+// A report of a process the pod's kernel stopped, of either of the kernel's causes, crosses the
+// wire whole, through the writer and the reader a launcher and the daemon speak, with its cause,
+// and the frame's own rule takes it.
+func TestMemoryKillAKernelKillRoundTripsThroughTheWireWithItsCause(t *testing.T) {
+	for _, tc := range []struct {
+		cause MemoryKillCause
+		line  string
+	}{
+		{MemoryKillCauseKernel, kernelKillLine},
+		{MemoryKillCauseKernelProtected, kernelProtectedKillLine},
+	} {
+		t.Run(string(tc.cause), func(t *testing.T) {
+			kill := memoryKill()
+			kill.Cause = tc.cause
+			var wire bytes.Buffer
+			if err := NewWriter(&wire).WriteFrame(kill); err != nil {
+				t.Fatal(err)
+			}
+			if wire.String() != tc.line+"\n" {
+				t.Fatalf("the writer wrote %s, want %s", wire.String(), tc.line)
+			}
+			line, err := NewReader(&wire).ReadLine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := Decode(line)
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			if !reflect.DeepEqual(decoded, kill) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
+			}
+			if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
+				t.Fatalf("the decoded kernel kill does not validate: %v", err)
+			}
+		})
+	}
+}
+
+// A report that carries no cause, which is every report a launcher built before the member sends,
+// decodes with none and validates: it is the guard's own kill. The guard's report still encodes
+// as those bytes, with no cause member.
+func TestMemoryKillAReportWithNoCauseIsTheGuardsOwn(t *testing.T) {
+	decoded, err := Decode([]byte(memoryKillLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill, ok := decoded.(LauncherMemoryKill)
+	if !ok || kill.Cause != MemoryKillCauseGuard {
+		t.Fatalf("decoded %#v, want a launcher_memory_kill with no cause", decoded)
+	}
+	if err := kill.Validate(); err != nil {
+		t.Fatalf("a report with no cause does not validate: %v", err)
+	}
+	line, err := json.Marshal(memoryKill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != memoryKillLine {
+		t.Fatalf("the guard's report encodes as %s, want %s", line, memoryKillLine)
+	}
+}
+
+// A cause other than the three MemoryKillCause values is one no note says, and the frame's own
+// rule refuses it, naming the cause; the three it knows are taken.
+func TestMemoryKillValidateRefusesACauseItDoesNotKnow(t *testing.T) {
+	for _, cause := range []MemoryKillCause{MemoryKillCauseGuard, MemoryKillCauseKernel, MemoryKillCauseKernelProtected} {
+		k := memoryKill()
+		k.Cause = cause
+		if err := k.Validate(); err != nil {
+			t.Fatalf("cause %q is refused: %v", cause, err)
+		}
+	}
+	for _, cause := range []MemoryKillCause{"guard", "Kernel", " kernel", "oom", "protected", "kernel-Protected", "kernel-protected "} {
+		t.Run(string(cause), func(t *testing.T) {
+			k := memoryKill()
+			k.Cause = cause
+			err := k.Validate()
+			want := fmt.Sprintf("launcher_memory_kill cause is %q, not \"kernel\", \"kernel-protected\" or none", cause)
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, want)
+			}
+		})
+	}
+}
+
+// An acknowledgement without kernelKills, an older daemon's or the controller's pod's, decodes
+// with it false, whether or not it carries guard settings; one with it decodes true.
+func TestHelloAckKernelKillsDecodesFalseWithoutTheMemberAndTrueWithIt(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		line string
+		want LauncherHelloAck
+	}{
+		{`{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
+		{memoryGuardAckLine, LauncherHelloAck{MemoryGuard: settings}},
+		{`{"type":"launcher_hello_ack","kernelKills":true}`, LauncherHelloAck{KernelKills: true}},
+		{`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`,
+			LauncherHelloAck{MemoryGuard: settings, KernelKills: true}},
+	} {
+		decoded, err := Decode([]byte(tc.line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", tc.line, err)
+		}
+		if !reflect.DeepEqual(decoded, tc.want) {
+			t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.want)
+		}
+	}
+}
+
+// An acknowledgement whose KernelKills is false carries no kernelKills member, so it is byte for
+// byte the acknowledgement a daemon built before the member writes, with guard settings or
+// without; one whose KernelKills is true carries the member after the settings.
+func TestHelloAckEncodesKernelKillsOnlyWhenTrue(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		ack  LauncherHelloAck
+		line string
+	}{
+		{LauncherHelloAck{}, `{"type":"launcher_hello_ack"}`},
+		{LauncherHelloAck{MemoryGuard: settings}, memoryGuardAckLine},
+		{LauncherHelloAck{KernelKills: true}, `{"type":"launcher_hello_ack","kernelKills":true}`},
+		{LauncherHelloAck{MemoryGuard: settings, KernelKills: true},
+			`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`},
+	} {
+		line, err := json.Marshal(tc.ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(line) != tc.line {
+			t.Fatalf("%+v encodes as %s, want %s", tc.ack, line, tc.line)
 		}
 	}
 }

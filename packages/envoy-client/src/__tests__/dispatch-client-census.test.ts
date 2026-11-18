@@ -47,6 +47,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   ask: (client) => client.ask("DSP-1", { question: "Which?", actor } as never),
   openAsks: (client) => client.openAsks("session-1"),
   openAsksForProject: (client) => client.openAsksForProject("DSP"),
+  priorities: (client) => client.priorities(["DSP"]),
   sessionAnswers: (client) => client.sessionAnswers("session-1"),
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
@@ -62,6 +63,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  reviewArtifact: (client) => client.reviewArtifact("artifact-1", 2, { state: "approved" }),
   recordResult: (client) =>
     client.recordResult("DSP-1", {
       actor,
@@ -148,8 +150,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
         "http://dispatch.test",
         bearerCredential("secret"),
         recording,
-        undefined,
-        DISPATCH_WRITE_RETRY
+        { writeRetry: DISPATCH_WRITE_RETRY }
       );
 
       await call(client).catch(() => undefined);

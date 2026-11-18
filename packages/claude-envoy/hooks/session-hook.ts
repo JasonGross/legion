@@ -10,7 +10,7 @@
 //    `CLAUDE_ENV_FILE`, which Claude Code sources into every later Bash command of the session,
 //    each unless an earlier SessionStart already wrote that line there. The `dispatch` command
 //    reads the file ENVOY_CONFIG_FILE names whenever DISPATCH_HOST is set. A subagent's Bash can
-//    lack what that file holds (anthropics/claude-code#46696); the `dispatch` command it runs then
+//    lack what that file holds (Claude Code issue 46696); the `dispatch` command it runs then
 //    takes host `claude` from `CLAUDE_CODE_CHILD_SESSION=1` and reads `CLAUDE_CONFIG_DIR` itself.
 //    The path is single-quoted (`singleQuoted`, whose doc gives what Claude Code's
 //    PowerShell bridge reads of that form). The command reads the session id from `CLAUDE_CODE_SESSION_ID`, which
@@ -18,11 +18,11 @@
 // 2. For a Legion pane (`LEGION_STATE_DIR` set), write the pane's jj attribution overlay under
 //    that directory and hand on the jj config chain it layers over: `export JJ_CONFIG='<chain>'`
 //    in the same file, so every jj commit a Bash command of the session makes carries an
-//    `Omp-Session: <id>` trailer, and a `Dispatch: <KEY>` line too for a pane whose environment
-//    names an issue key, scoped to that pane's own workspace — which of the pane's variables say
-//    so, and how, is `paneAttributionOptions`
-//    (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`). The
-//    hook writes it, not the claim boot: that boot is the MCP server Claude Code spawns as a
+//    `Omp-Session: <id>` line, then a `Legion-Role: <role>` line for a pane whose `LEGION_ROLE`
+//    names a role, and a `Dispatch: <KEY>` line too for a pane whose environment names an issue
+//    key, scoped to that pane's own workspace — which of the pane's variables say so, and how, is
+//    `paneAttributionOptions` (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`).
+//    The hook writes it, not the claim boot: that boot is the MCP server Claude Code spawns as a
 //    child, and a child cannot change its parent's environment. This line replaces an earlier one
 //    rather than joining it: exactly one `export JJ_CONFIG=` stands however many times the hook
 //    runs, since a resume or a compaction of the same session id runs it again over the file it
@@ -96,7 +96,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -257,8 +257,8 @@ async function openAsks(raw: unknown): Promise<void> {
     const stateDir = process.env["LEGION_STATE_DIR"]
     if (stateDir) {
       try {
-        // The pane's own key and workspace, by the rule both harnesses read those two variables
-        // by (`paneAttributionOptions`).
+        // The pane's own key, workspace and role, by the rule both harnesses read those three
+        // variables by (`paneAttributionOptions`).
         const chain = await exportJjSessionAttribution(input.session_id, stateDir, {
           ...paneAttributionOptions(process.env),
           resolveBase: () => userConfigChain(JJ_BASE_CHAIN_TIMEOUT_MS),
@@ -269,8 +269,8 @@ async function openAsks(raw: unknown): Promise<void> {
         // 2.1.311, so the file belongs to this session id alone: an `export JJ_CONFIG=` line
         // already in it was written by an earlier run of this same id — a resume or a compaction
         // — and names this same session's own overlay, still on disk and still correct. Removing
-        // it after a jj that did not answer would leave the session with neither trailer, where
-        // keeping it leaves the session the trailer it already had.
+        // it after a jj that did not answer would leave the session with no trailer, where keeping
+        // it leaves the session the trailers it already had.
         if (chain !== undefined) {
           replaceOnce(envFile, JJ_CONFIG_EXPORT, `${JJ_CONFIG_EXPORT}${singleQuoted(chain)}`)
         }
@@ -307,12 +307,9 @@ async function openAsks(raw: unknown): Promise<void> {
   for (const warning of warnings) process.stdout.write(`envoy: ${warning}\n`)
   if (dispatch.enabled) {
     try {
-      const snapshot = await new DispatchClient(
-        dispatch.url,
-        dispatch.credential,
-        fetch,
-        AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
-      ).openAsks(input.session_id)
+      const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
+        signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+      }).openAsks(input.session_id)
       process.stdout.write(
         `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
       )
@@ -454,8 +451,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
+      // Compared whole above; the reason reaches the session's context, so it names the URL
+      // without the user and password it may carry.
+      const read =
+        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
       return {
-        reason: `the refresher read ${outcome.dispatch_url ?? "no Dispatch"}, not the Dispatch envoy.json names now`,
+        reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
     const left = remainingUntil(by)

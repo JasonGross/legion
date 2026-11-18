@@ -269,18 +269,23 @@ func (rig *listRig) interestIDs(t *testing.T) []string {
 	return ids
 }
 
-// sample is gauge's sample on the rig's /metrics, and whether the scrape has one. The scrape always
-// carries the gauge's TYPE line, which the test checks too.
+// sample is gauge's sample on the rig's /metrics, and whether the scrape has one (gaugeSample).
 func (rig *listRig) sample(t *testing.T, gauge string) (int64, bool) {
 	t.Helper()
-	body, err := io.ReadAll(rig.get("/metrics").Body)
-	if err != nil {
-		t.Fatalf("read /metrics: %v", err)
-	}
-	if !strings.Contains(string(body), "# TYPE "+gauge+" gauge\n") {
+	return gaugeSample(t, rig.handler, gauge)
+}
+
+// gaugeSample is gauge's sample on the /metrics that handler serves, and whether the scrape has
+// one. The scrape always carries the gauge's TYPE line, which the test checks too.
+func gaugeSample(t *testing.T, handler http.Handler, gauge string) (int64, bool) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := recorder.Body.String()
+	if !strings.Contains(body, "# TYPE "+gauge+" gauge\n") {
 		t.Fatalf("/metrics lacks the TYPE line of %s:\n%s", gauge, body)
 	}
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		if value, ok := strings.CutPrefix(line, gauge+" "); ok {
 			n, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
@@ -347,7 +352,7 @@ func (rig *listRig) register(t *testing.T, ids ...string) {
 		if err := rig.sessions.Put(id, session.SessionEntry{MachineID: "test-machine", Dir: "/test/" + id, SelfSubscribed: true}); err != nil {
 			t.Fatalf("register %s's session: %v", id, err)
 		}
-		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id}, []string{contracts.AgentSubject(id)}); err != nil {
+		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id}, []string{contracts.LegacyAgentSubject(id)}); err != nil {
 			t.Fatalf("register %s's interest: %v", id, err)
 		}
 	}
@@ -449,7 +454,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 				rig.assertNoSample(t, "envoy_active_interests")
 			}
 
-			if err := cache.Rewatch(rig.client.Conn); err != nil {
+			if err := cache.Rewatch(context.Background(), rig.client.Conn); err != nil {
 				t.Fatalf("read the %s bucket again: %v", stale, err)
 			}
 			rig.awaitServed(t, 5*time.Second, "both lists once the "+stale+" copy read its bucket again")
@@ -501,9 +506,9 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	for _, row := range rows {
 		topics[row.SessionID] = row.Topics
 	}
-	want := map[string][]string{"ses_stall_joined": {contracts.AgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": nil}
+	want := map[string][]string{"ses_stall_joined": {contracts.LegacyAgentSubject("ses_stall_joined")}, "ses_stall_unsubscribed": {}}
 	if !reflect.DeepEqual(topics, want) {
-		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %v, want %v", topics, want)
+		t.Fatalf("GET /v1/sessions while NATS stalls listed topics %#v, want %#v", topics, want)
 	}
 	if got := rig.interestIDs(t); !slices.Equal(got, []string{"ses_stall_joined"}) {
 		t.Fatalf("GET /v1/interests/ while NATS stalls lists %v, want [ses_stall_joined]", got)
@@ -522,7 +527,7 @@ type unreadRewatch struct {
 	failed chan<- struct{}
 }
 
-func (c unreadRewatch) Rewatch(*natsgo.Conn) error {
+func (c unreadRewatch) Rewatch(context.Context, *natsgo.Conn) error {
 	select {
 	case c.failed <- struct{}{}:
 	default:
