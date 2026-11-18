@@ -120,8 +120,8 @@ decide what they may do there:
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -129,15 +129,21 @@ change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accou
 account granted it. The mint reads that second set before each token and asks for the role's
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
-permission. The daemon itself reads
-GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts,
-which covers what arrived while the daemon was down, and once an agent's handoff has been recorded,
-the moment the daemon next decides on that pull request's state. It runs on no timer, and it reads
-one issue's own pull request rather than a listing of every open one, so a handoff costs the reads
-of its own pull request alone.
-It reads no repository ruleset, no branch protection and no check run: whether CI is red at a head
-reaches the daemon as Envoy's settled observation of that head's checks, and the checks a base
-branch requires the daemon never reads at all, so it names no required check that has never run.
+permission. An App registered before a permission joined its manifest lacks that permission
+until you add it in the App's settings on GitHub and each account that installed the App
+approves it. The controller, which works no repository, holds a read lease of the review App on
+each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
+commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
+itself reads GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts, which covers
+what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
+the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's
+own pull request rather than a listing of every open one, so a handoff costs the reads of its own
+pull request alone. It reads no repository ruleset, no branch protection, no check run and no
+commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
+that head's check runs and commit statuses, and the checks a base branch requires the daemon never
+reads at all, so it names no required check that has never run. Dispatch's CI reconcile reads the
+commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
+permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
 Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
