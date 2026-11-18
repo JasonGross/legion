@@ -8,7 +8,12 @@
 // inbox, which needs nothing but the filesystem; and it exits 0 whatever happens, because a
 // failure here must never fail the tool call it follows.
 
-import { codexInboxDirectory, inboxContext, takeInbox } from "../src/codex/codex-inbox"
+import {
+  codexInboxDirectory,
+  HOOK_CONTEXT_MAX_BYTES,
+  inboxContext,
+  takeInbox,
+} from "../src/codex/codex-inbox"
 
 async function postToolUse(text: string): Promise<void> {
   const input: unknown = JSON.parse(text)
@@ -18,7 +23,12 @@ async function postToolUse(text: string): Promise<void> {
       : undefined
   const pluginData = process.env["PLUGIN_DATA"] || process.env["CLAUDE_PLUGIN_DATA"]
   if (typeof sessionId !== "string" || sessionId === "" || !pluginData) return
-  const taken = await takeInbox(codexInboxDirectory(pluginData, sessionId), "hook")
+  // Only what fits under Codex's cap on a hook's text; a longer message waits for `codex queue`.
+  const taken = await takeInbox(
+    codexInboxDirectory(pluginData, sessionId),
+    "hook",
+    HOOK_CONTEXT_MAX_BYTES,
+  )
   if (taken.length === 0) return
   process.stdout.write(
     JSON.stringify({

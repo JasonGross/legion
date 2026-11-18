@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { mkdirSync } from "node:fs"
+import { mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { createCodexDelivery } from "../src/codex/codex-delivery"
 import {
   type CodexInboxItem,
   codexInboxDirectory,
+  discardWaiting,
+  HOOK_CONTEXT_MAX_BYTES,
   inboxContext,
   putInbox,
   takeInbox,
@@ -35,6 +37,36 @@ describe("the Codex inbox", () => {
     expect(await takeInbox(directory, "server")).toEqual([])
     expect(await takenBy(directory, first)).toBe("hook")
     expect(await takenBy(directory, second)).toBe("hook")
+  })
+
+  test("a hook takes only what fits under Codex's cap, and leaves the rest waiting in order", async () => {
+    const directory = inbox()
+    await putInbox(directory, { content: "short one" })
+    const long = await putInbox(directory, { content: "x".repeat(HOOK_CONTEXT_MAX_BYTES) })
+    const after = await putInbox(directory, { content: "short two" })
+    const hook = await takeInbox(directory, "hook", HOOK_CONTEXT_MAX_BYTES)
+    expect(hook.map(({ item }) => item.content)).toEqual(["short one"])
+    expect(Buffer.byteLength(inboxContext(hook.map(({ item }) => item)))).toBeLessThanOrEqual(
+      HOOK_CONTEXT_MAX_BYTES,
+    )
+    // The long message and the one behind it stay for `codex queue`, which takes any length.
+    expect(await takenBy(directory, long)).toBeUndefined()
+    expect(await takenBy(directory, after)).toBeUndefined()
+    const server = await takeInbox(directory, "server")
+    expect(server.map(({ item }) => item.content)).toEqual([
+      "x".repeat(HOOK_CONTEXT_MAX_BYTES),
+      "short two",
+    ])
+  })
+
+  test("a server that binds drops the lines an earlier one left, except those it waits on", async () => {
+    const directory = inbox()
+    const left = await putInbox(directory, { content: "left behind" })
+    const mine = await putInbox(directory, { content: "this process's" })
+    expect(await discardWaiting(directory, (name) => name === mine)).toBe(1)
+    expect((await takeInbox(directory, "hook")).map(({ name }) => name)).toEqual([mine])
+    expect(await takenBy(directory, left)).toBeUndefined()
+    expect(await discardWaiting(join(root, "missing"))).toBe(0)
   })
 
   test("the session id is one path segment, whatever it holds", () => {
@@ -177,12 +209,19 @@ describe("createCodexDelivery", () => {
     delivery.stop()
   })
 
-  test("stopping rejects a line still waiting", async () => {
-    const { delivery } = harness(inbox())
+  test("stopping rejects a line still waiting and removes it, so Envoy's resend is its one copy", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "never" })
     await Bun.sleep(20)
+    expect(readdirSync(join(directory, "waiting"))).toHaveLength(1)
     delivery.stop()
     await expect(written).rejects.toThrow("stopped before the message was taken")
+    for (let i = 0; i < 50 && readdirSync(join(directory, "waiting")).length > 0; i++) {
+      await Bun.sleep(10)
+    }
+    expect(readdirSync(join(directory, "waiting"))).toEqual([])
+    expect(await takeInbox(directory, "hook")).toEqual([])
   })
 })

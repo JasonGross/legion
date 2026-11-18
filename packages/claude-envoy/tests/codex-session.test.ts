@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
-import { codexProcessEnv, fitArgument } from "../src/codex/codex-cli"
+import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
 import {
   codexHome,
@@ -332,5 +332,22 @@ describe("the environment a side question and codex queue run in", () => {
   test("reads this very process's environment from /proc on Linux", () => {
     if (process.platform !== "linux") return
     expect(codexProcessEnv(process.pid, {})["PATH"]).toBe(process.env["PATH"])
+  })
+})
+
+describe("codex queue", () => {
+  const root = temporaryDirectory("codex-queue-argv")
+  test("gets the message as one --message= argument, so a text that starts with - is not an option", async () => {
+    const argvFile = join(root, "argv")
+    const fake = join(root, "codex")
+    writeFileSync(fake, `#!/bin/sh\nfor a in "$@"; do printf '%s\\0' "$a"; done > '${argvFile}'\n`)
+    chmodSync(fake, 0o755)
+    await queueMessage({ codexHome: root, env: {}, executable: fake }, "thread-1", "- item\n- two")
+    expect(readFileSync(argvFile, "utf8").split("\0").slice(0, -1)).toEqual([
+      "queue",
+      "--thread",
+      "thread-1",
+      "--message=- item\n- two",
+    ])
   })
 })

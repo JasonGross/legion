@@ -1,5 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors"
-import { type CodexInboxItem, putInbox, takeInbox, takenBy } from "./codex-inbox"
+import { type CodexInboxItem, discardWaiting, putInbox, takeInbox, takenBy } from "./codex-inbox"
 
 /**
  * Puts a line into a Codex session's conversation (INFRA-3558).
@@ -149,12 +149,19 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     stop() {
       stopped = true
       clearInterval(timer)
-      for (const waiter of waiting.values()) {
+      // A refused write leaves its Envoy frame unanswered, so Envoy sends it again; its line is
+      // removed, so the hook or a later server's sweep does not deliver it a second time.
+      const refused = new Map<string, Set<string>>()
+      for (const [name, waiter] of waiting) {
+        refused.set(waiter.directory, (refused.get(waiter.directory) ?? new Set()).add(name))
         waiter.reject(
           new Error("the Codex session's delivery stopped before the message was taken"),
         )
       }
       waiting.clear()
+      for (const [directory, names] of refused) {
+        void discardWaiting(directory, (name) => !names.has(name)).catch(() => undefined)
+      }
     },
   }
 }

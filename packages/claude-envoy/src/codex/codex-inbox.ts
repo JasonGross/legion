@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /**
@@ -71,13 +71,58 @@ export async function takenBy(
 }
 
 /**
- * Takes every waiting message for `taker`, oldest first, and answers them. A message another
- * taker renamed first is skipped, as is one whose file cannot be read once taken (it is left in
- * the taker's directory, where nothing reads it again).
+ * Removes the messages waiting in `directory` that no write of this process waits for: lines an
+ * earlier server of the session left when it stopped. Each one's write never resolved, so the
+ * Envoy frame it carried was never answered and Envoy sends it again to whoever binds the session
+ * next; delivering the file as well would give the session the message twice (after `codex
+ * resume`, for one). `keep` names the files this process still waits on.
+ */
+export async function discardWaiting(
+  directory: string,
+  keep: (name: string) => boolean = () => false,
+): Promise<number> {
+  const waiting = join(directory, "waiting")
+  let names: string[]
+  try {
+    names = await readdir(waiting)
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    if (!name.endsWith(".json") || keep(name)) continue
+    try {
+      await rm(join(waiting, name))
+      removed++
+    } catch {
+      // Taken by the hook or the sweep meanwhile.
+    }
+  }
+  return removed
+}
+
+/**
+ * The most a `PostToolUse` hook hands Codex at once, in bytes of `inboxContext`'s text. Codex
+ * caps a hook's `additionalContext` at 2,500 tokens by default (`hooks/src/output_spill.rs` in
+ * 0.154.0); past it the model gets a preview and the rest goes to a file, while the message would
+ * count as delivered whole. 8,000 bytes stays under that cap at four bytes a token, Codex's own
+ * estimate, and a byte is never less than a token's share of a character.
+ */
+export const HOOK_CONTEXT_MAX_BYTES = 8_000
+
+/**
+ * Takes waiting messages for `taker`, oldest first, and answers them. A message another taker
+ * renamed first is skipped, as is one whose file cannot be read once taken (it is left in the
+ * taker's directory, where nothing reads it again).
+ *
+ * With `maxContextBytes`, it stops at the first message that would take `inboxContext`'s text past
+ * that many bytes, and leaves it and every later one waiting, in order, for `codex queue` at the
+ * turn's end, which takes a message of any length.
  */
 export async function takeInbox(
   directory: string,
   taker: CodexInboxTaker,
+  maxContextBytes?: number,
 ): Promise<{ readonly name: string; readonly item: CodexInboxItem }[]> {
   const waiting = join(directory, "waiting")
   let names: string[]
@@ -91,6 +136,17 @@ export async function takeInbox(
   await mkdir(destination, { recursive: true, mode: 0o700 })
   const taken: { name: string; item: CodexInboxItem }[] = []
   for (const name of names) {
+    if (maxContextBytes !== undefined) {
+      let waitingItem: unknown
+      try {
+        waitingItem = JSON.parse(await readFile(join(waiting, name), "utf8"))
+      } catch {
+        continue
+      }
+      if (typeof (waitingItem as CodexInboxItem | null)?.content !== "string") continue
+      const items = [...taken.map(({ item }) => item), waitingItem as CodexInboxItem]
+      if (Buffer.byteLength(inboxContext(items)) > maxContextBytes) break
+    }
     try {
       await rename(join(waiting, name), join(destination, name))
     } catch {

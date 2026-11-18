@@ -78,10 +78,16 @@ export function queueMessage(
     return Promise.reject(error)
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(command.executable, ["queue", "--thread", threadId, "--message", message], {
-      env: childEnv(command),
-      stdio: ["ignore", "pipe", "pipe"],
-    })
+    // `--message=<text>` and not `--message <text>`: `codex queue` reads a separate value that starts
+    // with `-` (a Markdown list) as an option of its own and exits 2 (measured on 0.154.0).
+    const child = spawn(
+      command.executable,
+      ["queue", "--thread", threadId, `--message=${message}`],
+      {
+        env: childEnv(command),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    )
     let output = ""
     child.stdout.on("data", (chunk: Buffer) => {
       output += chunk.toString()

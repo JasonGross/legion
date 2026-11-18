@@ -41,7 +41,7 @@ import { sessionTitle } from "../session-title"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
-import { codexInboxDirectory } from "./codex-inbox"
+import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
 import {
   type CodexSessionRecord,
   codexPluginDataDirectory,
@@ -282,6 +282,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
     return
   }
   const bound = record
+  // Lines an earlier server of this session left waiting: Envoy sends each one's frame again.
+  await discardWaiting(codexInboxDirectory(stateDirectory, bound.session_id))
   /** Whether the session code, the live view and the transcript follower have started; a `/new`
    *  before then is applied once they have. */
   let ready = false

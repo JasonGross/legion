@@ -11,12 +11,12 @@
           },
           {
             "type": "command",
-            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" dispatch-first",
+            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" dispatch-first --host codex",
             "timeout": 20
           },
           {
             "type": "command",
-            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" answers",
+            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" answers --host codex",
             "timeout": 5
           }
         ]
