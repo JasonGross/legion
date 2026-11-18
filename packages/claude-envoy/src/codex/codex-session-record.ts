@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { readFileSync, readlinkSync } from "node:fs"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { z } from "zod"
@@ -47,6 +47,24 @@ export function codexSessionRecordFile(stateDirectory: string, pid: number): str
  */
 export function codexEndedFile(stateDirectory: string, pid: number, sessionId: string): string {
   return join(stateDirectory, "codex-sessions", `${pid}.${encodeURIComponent(sessionId)}.ended`)
+}
+
+/**
+ * Leaves session `sessionId`'s ended marker, then touches the record's times, unchanged: a server
+ * watches the record file (`fs.watchFile`, which polls its stat), so the touch is what makes the
+ * owning server read the marker, and so stop delivering into the ended thread, as soon as it is
+ * there rather than at the next `SessionStart`.
+ */
+export async function markSessionEnded(
+  stateDirectory: string,
+  pid: number,
+  sessionId: string,
+): Promise<void> {
+  const marker = codexEndedFile(stateDirectory, pid, sessionId)
+  await mkdir(dirname(marker), { mode: 0o700, recursive: true })
+  await writeFile(marker, "", { mode: 0o600 })
+  const now = new Date()
+  await utimes(codexSessionRecordFile(stateDirectory, pid), now, now)
 }
 
 /** Whether the marker `codexEndedFile` names is there. */

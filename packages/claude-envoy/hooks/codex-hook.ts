@@ -13,8 +13,7 @@
 // `codex/hooks/hooks.json` runs beside this. At SessionEnd it leaves the session's ended marker.
 // It always exits 0: a session must start without Envoy.
 
-import { mkdir, rm, writeFile } from "node:fs/promises"
-import { dirname } from "node:path"
+import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
@@ -27,6 +26,7 @@ import {
   codexHome,
   codexProcessId,
   codexSessionRecordFile,
+  markSessionEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
@@ -75,9 +75,7 @@ async function sessionEnd(raw: unknown): Promise<void> {
   const record = await readCodexSessionRecord(file)
   if (record === undefined || record.session_id !== input.session_id) return
   if (!recordOfProcess(record, pid)) return
-  const marker = codexEndedFile(pluginData, pid, input.session_id)
-  await mkdir(dirname(marker), { mode: 0o700, recursive: true })
-  await writeFile(marker, "", { mode: 0o600 })
+  await markSessionEnded(pluginData, pid, input.session_id)
 }
 
 async function sessionStart(raw: unknown): Promise<void> {
@@ -109,6 +107,9 @@ async function sessionStart(raw: unknown): Promise<void> {
           `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
         )
       } else {
+        // The session again (`/resume`): it has not ended. The marker goes before the record is
+        // written, so a server that reads the new record never reads the old marker beside it.
+        await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
         await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
           codex_executable: codexExecutable(pid) ?? null,
           codex_home: codexHome(process.env),
@@ -119,8 +120,6 @@ async function sessionStart(raw: unknown): Promise<void> {
           transcript_path: input.transcript_path ?? null,
         })
         await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
-        // The session again (`/resume`): it has not ended.
-        await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
       }
     } catch (error) {
       process.stderr.write(`envoy: could not record the session id — ${messageFor(error)}\n`)

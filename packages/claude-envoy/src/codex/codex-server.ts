@@ -45,7 +45,7 @@ import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
 import {
   type CodexServerEntry,
   codexServersDirectory,
-  registerServer,
+  stillOwner,
   unregisterServer,
   waitForOwnership,
 } from "./codex-owner"
@@ -108,7 +108,10 @@ const DispatchToolArguments = z.object({
 
 /** Why a standby server's Envoy tools do not run (`./codex-owner`). */
 const STANDBY_NOTE =
-  "another of this codex process's plugin servers serves its Envoy session, because Codex starts one server per thread and one of them owns the session; after /new, this thread's Envoy tools start once Codex unloads the previous thread's server, thread_unload_delay (60 s by default) after that thread went idle with no subscriber, and messages to this session arrive meanwhile; the dispatch tool works now"
+  "another of this codex process's plugin servers serves its Envoy session, because Codex starts one server per thread and one of them owns the session; after /new, this thread's Envoy tools start once every server started before this one has exited, which for the previous thread's server is thread_unload_delay (60 s by default) after that thread went idle with no subscriber, and messages to this session arrive meanwhile; the dispatch tool works now"
+
+/** How often the owning server checks it still owns the session. */
+const OWNER_RECHECK_MS = 5_000
 
 /**
  * The Codex thread whose turn made a tool call, from the request's `_meta`: Codex 0.154.0 sends
@@ -245,11 +248,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const shared = sharedAppServer(codexPid)
   const recordFile = codexSessionRecordFile(stateDirectory, codexPid)
   const serversDirectory = codexServersDirectory(stateDirectory, codexPid)
-  const self: CodexServerEntry = {
-    pid: process.pid,
-    since: Date.now(),
-    started: processStarted(process.pid) ?? null,
-  }
+  /** This server's entry, once `waitForOwnership` published it. */
+  let self: CodexServerEntry | undefined
   /** Whether session `sessionId` of this process has ended (`SessionEnd`'s marker). */
   const endedNow = (sessionId: string): Promise<boolean> =>
     sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
@@ -340,7 +340,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
     // The entry goes once the delivery's waiting lines are withdrawn, so a server that takes over
     // never discards a line this one still answers for.
     const withdrawn = (delivery?.stop() ?? Promise.resolve()).finally(() =>
-      unregisterServer(serversDirectory, self).catch(() => undefined),
+      self === undefined
+        ? undefined
+        : unregisterServer(serversDirectory, self).catch(() => undefined),
     )
     if (session === undefined) {
       void withdrawn.finally(stopped.resolve)
@@ -364,14 +366,32 @@ export async function runCodexEnvoyServer(): Promise<void> {
   // One server per codex process owns its Envoy session (`./codex-owner`): Codex starts one per
   // thread, and the others stand by, serving their thread's `dispatch` calls, until every server
   // older than them is gone.
-  await registerServer(serversDirectory, self)
   notReady = STANDBY_NOTE
-  if (!(await waitForOwnership(serversDirectory, self, stopping.signal))) {
+  self = await waitForOwnership(
+    serversDirectory,
+    process.pid,
+    processStarted(process.pid) ?? null,
+    stopping.signal,
+  )
+  if (self === undefined) {
     await stopped.promise
     await server.close().catch(() => undefined)
     return
   }
-  notReady = "this session's Envoy side starts at its first prompt"
+  notReady =
+    "this session's Envoy side starts once Codex records the session at its first prompt; a fork or an ephemeral session, which keeps no transcript, is never registered"
+  // The owner looks again at each poll: a split that started anyway is said, not kept silent.
+  const owned = self
+  const recheck = setInterval(() => {
+    void stillOwner(serversDirectory, owned).then(
+      (still) => {
+        if (!still)
+          warn(`another plugin server of codex process ${codexPid} owns its Envoy session as well`)
+      },
+      () => undefined,
+    )
+  }, OWNER_RECHECK_MS)
+  recheck.unref?.()
   record = await waitForRecord(recordFile, codexPid, stopping.signal, endedNow)
   if (record === undefined) {
     await stopped.promise
