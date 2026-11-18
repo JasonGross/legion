@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
@@ -78,6 +78,15 @@ describe("the owner of a codex process's Envoy session", () => {
     expect(await currentOwner(directory, probeOf({ 102: "s102" }))).toBeUndefined()
     writeFileSync(join(directory, "0.json"), JSON.stringify({ pid: 103, started: "s103" }))
     expect((await currentOwner(directory, probeOf({ 102: "s102", 103: "s103" })))?.pid).toBe(103)
+  })
+
+  test("an entry left empty by a server killed in its write counts as dead after a few seconds", async () => {
+    const directory = join(root, "stale-empty")
+    await registerServer(directory, 102, "s102")
+    writeFileSync(join(directory, "0.json"), "")
+    const longAgo = new Date(Date.now() - 60_000)
+    utimesSync(join(directory, "0.json"), longAgo, longAgo)
+    expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
   })
 
   test("a server whose entry vanished publishes it again, at the back", async () => {

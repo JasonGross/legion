@@ -1,4 +1,4 @@
-import { link, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { processStarted } from "./codex-session-record"
 
@@ -157,10 +157,19 @@ async function entryNames(directory: string): Promise<{ seq: number; name: strin
   })
 }
 
+/** How long a numbered entry may stay unreadable before it counts as dead: one small write takes
+ *  far less, so an entry still empty after this was left by a server killed in that write. */
+const UNREADABLE_ENTRY_MS = 5_000
+
 /** The entries `directory` holds, or undefined when one of them could not be read yet: a numbered
  *  file that is still empty or half-written (placed by an exclusive create where the file system
- *  has no hard links), which no look may decide past. */
-async function readEntries(directory: string): Promise<CodexServerEntry[] | undefined> {
+ *  has no hard links), which no look may decide past. Such a file older than
+ *  `UNREADABLE_ENTRY_MS` counts as dead, so a server killed in that write blocks no owner for
+ *  long. */
+async function readEntries(
+  directory: string,
+  now: () => number = Date.now,
+): Promise<CodexServerEntry[] | undefined> {
   const entries: CodexServerEntry[] = []
   for (const { name, seq } of await entryNames(directory)) {
     let text: string
@@ -169,17 +178,25 @@ async function readEntries(directory: string): Promise<CodexServerEntry[] | unde
     } catch {
       continue // Removed meanwhile.
     }
+    let parsed: { pid?: unknown; started?: unknown } | undefined
     try {
-      const parsed = JSON.parse(text) as { pid?: unknown; started?: unknown }
-      if (typeof parsed.pid !== "number") return undefined
-      entries.push({
-        pid: parsed.pid,
-        seq,
-        started: typeof parsed.started === "string" ? parsed.started : null,
-      })
+      parsed = JSON.parse(text) as { pid?: unknown; started?: unknown }
     } catch {
+      parsed = undefined
+    }
+    if (typeof parsed?.pid !== "number") {
+      const written = await stat(join(directory, name)).then(
+        (info) => info.mtimeMs,
+        () => undefined,
+      )
+      if (written === undefined || now() - written > UNREADABLE_ENTRY_MS) continue
       return undefined
     }
+    entries.push({
+      pid: parsed.pid,
+      seq,
+      started: typeof parsed.started === "string" ? parsed.started : null,
+    })
   }
   return entries
 }
