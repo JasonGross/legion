@@ -10,6 +10,6 @@ body: |-
   turn), and reaches Dispatch through a pre-approved `dispatch` tool, since Codex's sandbox keeps
   shell commands off the network. Under Codex's shared app server, which runs several sessions in
   one process (`codex agents`, and every terminal session on Codex 0.170.0), it registers no
-  session with Envoy, and only the `dispatch` tool works. It is a package of its own because Codex's plugin validator
+  session with Envoy; the `dispatch` tool and the Dispatch hooks still work. It is a package of its own because Codex's plugin validator
   refuses a layout Claude Code's plugin needs; the release publishes it once an owner of the
   `@sjawhar` scope has published the name by hand.

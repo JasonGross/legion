@@ -175,8 +175,13 @@ export function sharedAppServer(pid: number): boolean {
     if (ps.status !== 0) return false
     argv = ps.stdout.trim().split(/\s+/)
   }
-  return codexSubcommand(argv.slice(1)) === "app-server"
+  return SHARED_SUBCOMMANDS.has(codexSubcommand(argv.slice(1)) ?? "")
 }
+
+/** The subcommands that run several sessions in one process: `app-server` (the daemon `codex agents`
+ *  and 0.170.0's terminal start) and `agents` (`codex agents --no-daemon` runs the app server inside
+ *  its own process, 0.170.0). */
+const SHARED_SUBCOMMANDS = new Set(["agents", "app-server"])
 
 /** The options of `codex` that take a value as the next argument (`codex --help`, 0.154.0). */
 const VALUE_OPTIONS = new Set([

@@ -285,6 +285,11 @@ export async function latestTurnCwd(transcriptPath: string | null): Promise<stri
       end -= length
       const joined = Buffer.concat([chunk, carry])
       const firstNewline = end === 0 ? -1 : joined.indexOf(10)
+      if (firstNewline < 0 && end > 0) {
+        // No line starts in this chunk: all of it belongs to a line an earlier chunk completes.
+        carry = joined
+        continue
+      }
       const whole = joined
         .subarray(firstNewline + 1)
         .toString("utf8")
@@ -319,10 +324,22 @@ function turnContextCwd(line: string): string | undefined {
 /**
  * The transcript of thread `threadId` under the Codex home `home`: Codex writes each session to
  * `sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread id>.jsonl` (measured on 0.154.0). The newest
- * such file when there are several; null when there is none.
+ * such file when there are several; null when there is none or the id is not a thread id's shape.
+ * A found path is kept for the life of the process, since the scan reads the whole tree.
  */
+const foundTranscripts = new Map<string, string>()
+
+/** Whether `id` has the shape of a Codex thread id: letters, digits and hyphens, nothing a path
+ *  or a glob could read otherwise. */
+export function threadIdShape(id: string): boolean {
+  return /^[0-9A-Za-z-]+$/.test(id)
+}
+
 export async function findTranscript(home: string, threadId: string): Promise<string | null> {
-  if (!/^[0-9A-Za-z-]+$/.test(threadId)) return null
+  if (!threadIdShape(threadId)) return null
+  const key = `${home}\0${threadId}`
+  const known = foundTranscripts.get(key)
+  if (known !== undefined) return known
   const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`)
   const found: string[] = []
   try {
@@ -332,5 +349,8 @@ export async function findTranscript(home: string, threadId: string): Promise<st
   } catch {
     return null
   }
-  return found.sort().at(-1) ?? null
+  const newest = found.sort().at(-1)
+  // A thread's transcript keeps its path, so a found one is not searched for again.
+  if (newest !== undefined) foundTranscripts.set(key, newest)
+  return newest ?? null
 }

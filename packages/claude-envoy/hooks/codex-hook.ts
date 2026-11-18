@@ -4,8 +4,9 @@
 // It records which session the `codex` process now runs, where the plugin's MCP server reads it
 // (`../src/codex/codex-session-record`): the server is that process's child too, but Codex hands
 // it no session id. It writes the record Claude Code's hook writes as well
-// (`sessions/<pid>/session-id`), so the server's session code follows `/new` to the new id the way
-// it follows a Claude Code `/clear`. Then it tells the model this session's open Dispatch asks and
+// (`sessions/<pid>/session-id`), so the server that owns the process's session
+// (`../src/codex/codex-owner`) follows `/new` to the new id the way it follows a Claude Code
+// `/clear`. Then it tells the model this session's open Dispatch asks and
 // how to run `dispatch` here, as plain output, which Codex adds to the model's context (measured on
 // 0.154.0). The dispatch-first skill and the answers list come from `dist/session-hook.js`, which
 // `codex/hooks/hooks.json` runs beside this. It always exits 0: a session must start without Envoy.
@@ -44,6 +45,21 @@ const SessionStartInput = z.object({
 /** What the model is told about running `dispatch` in a Codex session. */
 export const CODEX_DISPATCH_NOTE =
   "This Codex session reaches Dispatch through the `dispatch` tool of the `envoy` MCP server, not a shell command: Codex puts no plugin command on the shell's PATH, and its sandbox keeps shell commands off the network. Wherever a skill shows `dispatch <command> <flags>`, call the `dispatch` tool with `args` set to the words after `dispatch`, as a list, and `stdin` set to what the command would read on standard input (a here-document's text). It runs the same command, as this session, and answers with what the command prints and its exit code."
+
+/** Whether process `pid` already has a record, not ended, naming a session other than `sessionId`. */
+async function liveRecordOfAnother(
+  pluginData: string,
+  pid: number,
+  sessionId: string,
+): Promise<boolean> {
+  const record = await readCodexSessionRecord(codexSessionRecordFile(pluginData, pid))
+  return (
+    record !== undefined &&
+    record.session_id !== sessionId &&
+    !record.ended &&
+    recordOfProcess(record, pid)
+  )
+}
 
 const SessionEndInput = z.object({ session_id: z.string().min(1) })
 
@@ -86,9 +102,13 @@ async function sessionStart(raw: unknown): Promise<void> {
       if (sharedAppServer(pid)) {
         // No record: two sessions of one process would share it (`sharedAppServer`).
         process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
-      } else if (input.transcript_path === null || input.transcript_path === undefined) {
-        // An ephemeral fork (`/side`, `/btw`) of the session this process runs: it keeps no
-        // transcript, and recording it would move the session's registration to the fork.
+      } else if (
+        (input.transcript_path === null || input.transcript_path === undefined) &&
+        (await liveRecordOfAnother(pluginData, pid, input.session_id))
+      ) {
+        // An ephemeral fork (`/side`, `/btw`) of the session this process already runs: it keeps no
+        // transcript, and recording it would move the session's registration to the fork. An
+        // ephemeral session with nothing before it (`codex exec --ephemeral`) is recorded.
       } else if (started === undefined) {
         process.stderr.write(
           `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
@@ -102,7 +122,7 @@ async function sessionStart(raw: unknown): Promise<void> {
           ended: false,
           session_id: input.session_id,
           source: input.source ?? null,
-          transcript_path: input.transcript_path,
+          transcript_path: input.transcript_path ?? null,
         })
         await writeSessionHandoff(sessionHandoffFile(pluginData, pid), input.session_id)
       }

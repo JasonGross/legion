@@ -281,12 +281,19 @@ at a change of the binary it is pointed at.
   A record is the process's only while its `codex_started` is that process's start
   (`processStarted`: `/proc/<pid>/stat`, else `ps -o lstart=` under `LC_ALL=C` and `TZ=UTC`); the
   hook writes none where the start cannot be read, and prunes the records of exited pids at every
-  `SessionStart`. It writes none for an ephemeral fork (`/side`, `/btw`: `transcript_path` null),
-  which would otherwise move the registration to the fork. The `SessionEnd` hook marks the
-  record `ended`, and the delivery refuses every write until the next session's record arrives.
-  Under Codex's shared app server (`sharedAppServer`: the parent's subcommand is `app-server`,
-  which `codex agents` and 0.170.0's terminal both run) several sessions share one process, so
-  the hook writes no record and the server registers nothing; only the `dispatch` tool works.
+  `SessionStart`. It writes none for a fork (`/side`, `/btw`: `transcript_path` null while a live
+  record of the process names another session), which would otherwise move the registration to
+  the fork; an ephemeral session with nothing before it (`codex exec --ephemeral`) is recorded.
+  Codex starts one MCP server per thread (measured on 0.154.0), so one server per `codex` process
+  owns the session (`src/codex/codex-owner.ts`: an exclusive `codex-owners/<pid>.json` holding the
+  server's pid and start), and the others stand by, serving only their thread's `dispatch` calls,
+  until the owner is gone. The `SessionEnd` hook marks the record `ended`, and the delivery then
+  refuses every write until the next session's record arrives; Codex runs that hook only when it
+  unloads the thread (60 s idle by default), so a message sent between `/new` and then, or the new
+  thread's first prompt, can still be queued into the old thread.
+  Under Codex's shared app server (`sharedAppServer`: the parent's subcommand is `app-server` or
+  `agents`: `codex agents` (with or without `--no-daemon`), a plain `codex` that joins a running app server, and on 0.170.0 every terminal session, which runs in a background `codex app-server --managed-daemon`) several sessions share one process, so the hook writes no record and the
+  server registers nothing; the `dispatch` tool and the `SessionStart` hooks still run.
 - **Delivery.** Codex has no call that writes into a running conversation. `src/codex/codex-delivery.ts`
   sends a line to an idle session with `codex queue` (the binary the session runs, read from
   `/proc/<pid>/exe`), and to a running turn through the inbox (`src/codex/codex-inbox.ts`): one

@@ -47,8 +47,9 @@ export interface CodexDelivery {
   turnStarted(): void
   /** The transcript says the turn ended: anything still waiting goes to `codex queue`. */
   turnEnded(): Promise<void>
-  /** The session ended (`SessionEnd`, at `/new` or exit): every write from now is refused, so its
-   *  Envoy frame stays unanswered and is sent again, until `rebind` names the session that follows. */
+  /** The session ended (`SessionEnd`, which Codex runs when it unloads the thread, up to a minute
+   *  after `/new`, or at exit): every write from now is refused, so its Envoy frame stays unanswered
+   *  and is sent again, until `rebind` names the session that follows. */
   sessionEnded(): void
   /** The process moved to another session (`/new`): no turn of it runs yet, and what waited for
    *  the old one goes to the new one. */
@@ -116,7 +117,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
   const timer = setInterval(() => {
     if (waiting.size === 0) return
     void check()
-      .then(() => (running || waiting.size === 0 ? undefined : sweep()))
+      .then(() => (running || ended || waiting.size === 0 ? undefined : sweep()))
       .catch((error: unknown) => options.warn(messageFor(error)))
   }, pollMs)
   timer.unref?.()

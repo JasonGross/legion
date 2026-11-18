@@ -89,6 +89,7 @@ describe("the Codex session record", () => {
     expect(codexSubcommand(["resume", "app-server"])).toBe("resume")
     expect(codexSubcommand(["fix", "the", "app-server", "tests"])).toBe("fix")
     expect(codexSubcommand(["--dangerously-bypass-hook-trust"])).toBeUndefined()
+    expect(codexSubcommand(["agents", "--no-daemon"])).toBe("agents")
   })
 
   test("the records of codex processes that exited are pruned, and a live one's is kept", async () => {

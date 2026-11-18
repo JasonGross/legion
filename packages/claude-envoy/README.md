@@ -248,13 +248,12 @@ Measured on Codex CLI 0.154.0.
 Which sessions get Envoy depends on how Codex runs them.
 A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`) registers with
 Envoy and gets everything below.
-Codex's shared app server runs several sessions in one process: `codex agents`, a plain `codex`
-that finds one running, and on 0.170.0 every terminal session, which runs in a background
-`codex app-server --managed-daemon`.
+Codex's shared app server runs several sessions in one process: `codex agents` (with or without `--no-daemon`), a plain `codex` that joins a running app server, and on 0.170.0 every terminal session, which runs in a background `codex app-server --managed-daemon`.
 The plugin cannot tell those sessions' Envoy traffic apart, so there it registers none of them:
 they get no Envoy messages and do not show on the Agents page, and the hook tells the model so.
-Their `dispatch` tool still works, as the session that calls it.
-An ephemeral fork (`/side`, `/btw`) is never registered either.
+Everything else still runs there: the `dispatch` tool, as the session that calls it, and the
+`SessionStart` hooks (the open-asks summary, the dispatch-first skill and the answers list).
+A fork (`/side`, `/btw`) is never registered: its session's registration stays where it was.
 
 - `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
@@ -263,9 +262,12 @@ An ephemeral fork (`/side`, `/btw`) is never registered either.
 - The session appears on the Agents page at its first prompt, not when the terminal opens: Codex
   gives the MCP server no session id, and its `SessionStart` hook, which runs at the first prompt
   and again after `/new`, records the id under the `codex` process both are children of
-  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`). Its `SessionEnd` hook marks the
-  record ended, so between `/new` and the next first prompt no message is answered as delivered
-  to a thread nobody has open; Envoy sends it again.
+  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`). Codex starts one MCP server per
+  thread, so a `/new` or a fork starts another; one server per `codex` process owns the session
+  (`src/codex/codex-owner.ts`) and the others stand by, serving only their thread's `dispatch`
+  calls. After `/new`, the owner moves the registration to the new session at its first prompt.
+  Until then, a message to the old session can still be queued into it, since Codex runs the old
+  thread's `SessionEnd` hook only when it unloads that thread (up to a minute later by default).
 - The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
   call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
 - A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few

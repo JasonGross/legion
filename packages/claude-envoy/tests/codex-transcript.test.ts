@@ -172,6 +172,16 @@ describe("latestTurnCwd on a long turn", () => {
     writeFileSync(file, `${turn}\n${Array.from({ length: 2000 }, () => filler).join("\n")}\n`)
     expect(await latestTurnCwd(file)).toBe("/deep")
   })
+
+  test("finds a turn whose line is longer than one read", async () => {
+    const file = join(root, "long-line.jsonl")
+    const turn = JSON.stringify({
+      payload: { cwd: "/long", model: "m", summary: "z".repeat(600 * 1024) },
+      type: "turn_context",
+    })
+    writeFileSync(file, `${turn}\n${JSON.stringify({ type: "event_msg" })}\n`)
+    expect(await latestTurnCwd(file)).toBe("/long")
+  })
 })
 
 describe("findTranscript", () => {
