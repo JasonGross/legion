@@ -1,6 +1,6 @@
 kind: Added
 custom:
-  Issue: pr3999
+  Issue: pr4406
 body: |-
   A Codex CLI plugin, `@sjawhar/codex-envoy`, built from this package's source and released with
   it at the same version: `codex plugin marketplace add cybermonklabs/legion`, then
