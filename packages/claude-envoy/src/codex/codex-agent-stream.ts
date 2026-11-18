@@ -10,7 +10,7 @@ import type { ChannelConnection, ChannelTopicSubscription } from "../channel-top
 import type { CodexTranscriptEvent } from "./codex-transcript"
 
 /**
- * The Agents page's live view of a Codex session (INFRA-3558).
+ * The Agents page's live view of a Codex session.
  *
  * The conversation comes from the session's transcript (`./codex-transcript`): what the person
  * typed, what the model wrote and its reasoning summaries, and each tool call with its output,

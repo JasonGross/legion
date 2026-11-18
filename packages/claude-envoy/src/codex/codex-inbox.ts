@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import { join } from "node:path"
 
 /**
- * The Codex plugin's inbox: messages waiting for the running turn of one session (INFRA-3558).
+ * The Codex plugin's inbox: messages waiting for the running turn of one session.
  *
  * Codex gives a plugin no way to write into a running conversation, but a `PostToolUse` hook's
  * `additionalContext` reaches the model in its very next request. So a message that arrives while

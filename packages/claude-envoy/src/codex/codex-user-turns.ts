@@ -8,7 +8,7 @@ import type { UserTurnState } from "../user-turn-state"
 import type { CodexInboxItem } from "./codex-inbox"
 
 /**
- * What a frame from Dispatch's Agents page becomes in a Codex session (INFRA-3558), the Codex
+ * What a frame from Dispatch's Agents page becomes in a Codex session, the Codex
  * counterpart of `../user-turn-router`.
  *
  * - A BTW is answered in a throwaway copy of the session's conversation (`askSideQuestion`,

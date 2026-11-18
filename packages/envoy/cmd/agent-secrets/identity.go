@@ -122,7 +122,7 @@ func approveURL() string {
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
 //
-// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs (INFRA-3558). A shell that
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs. A shell that
 // carries it beside another session's id, because a Codex session was started from a Claude Code
 // or Oh My Pi shell or the other way round, names whichever of `codex`, `claude` and `omp` is
 // this process's nearest ancestor; where the walk finds none of them, the order above, with

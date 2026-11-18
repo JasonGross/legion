@@ -219,7 +219,7 @@ human approval surface.
 
 ## Codex CLI
 
-The Codex CLI plugin (INFRA-3558) is a package of its own, `@sjawhar/codex-envoy`, built from
+The Codex CLI plugin is a package of its own, `@sjawhar/codex-envoy`, built from
 this package's source and released with it at the same version. One package cannot be both:
 Codex's plugin validator refuses a manifest that names its hooks file, so Codex's hooks sit at
 `hooks/hooks.json`, where Claude Code reads its own, and an npm install takes a package's root.

@@ -1,4 +1,4 @@
-// The Codex CLI's `PostToolUse` hook for the Envoy plugin (INFRA-3558): `codex/hooks/hooks.json`
+// The Codex CLI's `PostToolUse` hook for the Envoy plugin: `codex/hooks/hooks.json`
 // runs `dist/codex-tool-hook.js` after every tool call of a Codex session.
 //
 // It takes the messages waiting in the session's inbox (`../src/codex/codex-inbox`), oldest first

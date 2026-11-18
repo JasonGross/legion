@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { processStarted } from "./codex-session-record"
 
 /**
- * Which of a `codex` process's plugin servers owns its Envoy session (INFRA-3558).
+ * Which of a `codex` process's plugin servers owns its Envoy session.
  *
  * Codex starts one MCP server per thread (measured on 0.154.0: `/new` starts a second server under
  * the same `codex` process while the first runs on until Codex unloads its thread, and `/side` and

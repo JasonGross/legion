@@ -639,7 +639,7 @@ jobs:
   # builds dist/ and legion/ with packages/claude-envoy/scripts/verify-build.sh — the one
   # statement of what the published plugin must hold, which ci.yaml runs on every pull request —
   # puts that checked build into the checkout and packs it with the rest of the package.
-  # It also packs the Codex CLI plugin, @sjawhar/codex-envoy (INFRA-3558), from that same checked
+  # It also packs the Codex CLI plugin, @sjawhar/codex-envoy, from that same checked
   # dist/ and at the same version: the two hosts' plugin rules cannot both hold in one package
   # (packages/claude-envoy/scripts/build.ts, CODEX_SOURCES), so the Codex one is a package of its
   # own, built from the same source and released with this one.
@@ -716,7 +716,7 @@ jobs:
           # `unknown` and never updates, since one `unknown` is indistinguishable from the next
           # (measured on Claude Code 2.1.311). The Codex CLI names its plugin cache directory by
           # codex/.codex-plugin/plugin.json's and reinstalls when it changes (measured on Codex CLI
-          # 0.154.0, INFRA-3558), and the Codex package's package.json is what npm publishes it
+          # 0.154.0), and the Codex package's package.json is what npm publishes it
           # at. .omp-plugin/plugin.json's is what Oh My Pi reports,
           # and tests/envoy-channel-server.test.ts holds it equal to package.json's, so a release
           # that rewrote the first two alone would publish a plugin naming two versions. The

@@ -1,4 +1,4 @@
-// The Codex plugin on the real Codex CLI binary (INFRA-3558): a fresh `scripts/build.ts
+// The Codex plugin on the real Codex CLI binary: a fresh `scripts/build.ts
 // --codex-out` build of this tree, the `@sjawhar/codex-envoy` package, installed from a local
 // marketplace into a Codex home of the test's own, run with `codex exec` against a stand-in for
 // OpenAI's Responses API. It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package

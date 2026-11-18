@@ -2,7 +2,7 @@ import { messageFor } from "@legion/envoy-client/errors"
 import { type CodexInboxItem, putInbox, takeInbox, takenBy, withdrawWaiting } from "./codex-inbox"
 
 /**
- * Puts a line into a Codex session's conversation (INFRA-3558).
+ * Puts a line into a Codex session's conversation.
  *
  * Codex has no call that writes into a running conversation, so a line takes one of two ways in:
  *

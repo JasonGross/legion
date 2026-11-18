@@ -1,4 +1,4 @@
-// The Codex plugin's package, `@sjawhar/codex-envoy` (INFRA-3558), as scripts/build.ts writes it:
+// The Codex plugin's package, `@sjawhar/codex-envoy`, as scripts/build.ts writes it:
 // the rules of Codex's own plugin validator (`validate_plugin.py` of the `plugin-creator` skill
 // Codex CLI 0.154.0 installs), which CI cannot run since nothing in CI installs Codex, held here on
 // a build of this tree. The real validator and the real binary are run by hand and by

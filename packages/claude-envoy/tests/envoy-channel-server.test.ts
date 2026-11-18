@@ -488,7 +488,7 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   // Codex runs a plugin's MCP server with `cwd: "./"` in the plugin's directory and expands no
   // `${PLUGIN_ROOT}` in its arguments; it passes the server only the variables `env_vars` names;
   // and it asks before every call of a plugin's tool unless the tool is pre-approved (all measured
-  // on 0.154.0, INFRA-3558).
+  // on 0.154.0).
   const envoy = codexPlugin.mcpServers.envoy
   expect(envoy.cwd).toBe("./")
   expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])

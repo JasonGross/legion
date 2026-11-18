@@ -10,7 +10,7 @@ import { join } from "node:path"
  * line is `{timestamp, type, payload}`. This reads the few kinds the Codex plugin needs - a turn's
  * start and end, the model and effort a turn ran with, what the person typed, what the model
  * wrote, and each tool call and its output - and ignores every other kind, so a Codex release
- * that adds one changes nothing here. Measured on Codex CLI 0.154.0 (INFRA-3558).
+ * that adds one changes nothing here. Measured on Codex CLI 0.154.0.
  */
 export type CodexTranscriptEvent =
   | { readonly kind: "turn-started"; readonly turnId: string; readonly at: number }

@@ -40,7 +40,7 @@ export const BUNDLE_ENTRYPOINTS = {
   "envoy-channel": "bin/envoy-channel.ts",
   "session-hook": "hooks/session-hook.ts",
   "session-title-hook": "hooks/session-title-hook.ts",
-  // The Codex CLI's hooks (INFRA-3558): `codex-tool-hook` runs after every tool call, so it is a
+  // The Codex CLI's hooks: `codex-tool-hook` runs after every tool call, so it is a
   // bundle of its own that imports the inbox alone, as `session-title-hook` is for each prompt.
   "codex-hook": "hooks/codex-hook.ts",
   "codex-tool-hook": "hooks/codex-tool-hook.ts",
@@ -403,7 +403,7 @@ async function buildOut(out: string): Promise<void> {
   await buildLegionPlugin(join(out, "legion"))
 }
 
-/** What the Codex plugin, `@sjawhar/codex-envoy`, takes from `codex/` (INFRA-3558): its npm
+/** What the Codex plugin, `@sjawhar/codex-envoy`, takes from `codex/`: its npm
  *  manifest, its plugin manifest, its hooks and its README. It is a package of its own because
  *  Codex's plugin rules and Claude Code's cannot both hold in one directory: Codex's validator
  *  (`validate_plugin.py` of the `plugin-creator` skill Codex installs) refuses a manifest that

@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * The two things the Codex plugin asks of Codex itself (INFRA-3558): put a message into a running
+ * The two things the Codex plugin asks of Codex itself: put a message into a running
  * session (`codex queue`), and answer a side question in a throwaway copy of the session's
  * conversation (`codex app-server`'s `thread/fork`). Both run the same `codex` binary the session
  * runs, against the session's own Codex home.

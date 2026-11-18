@@ -8,7 +8,7 @@ import { processExists } from "../session-identity"
 import { pruneStateDirectory } from "../session-state"
 
 /**
- * How the Codex plugin's MCP server learns which session it serves (INFRA-3558).
+ * How the Codex plugin's MCP server learns which session it serves.
  *
  * Codex starts the plugin's MCP server as a child of the `codex` process with a stripped
  * environment and no session id, and runs the plugin's hooks as children of that same process

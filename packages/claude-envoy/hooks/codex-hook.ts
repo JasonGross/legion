@@ -1,4 +1,4 @@
-// The Codex CLI's `SessionStart` and `SessionEnd` hooks for the Envoy plugin (INFRA-3558):
+// The Codex CLI's `SessionStart` and `SessionEnd` hooks for the Envoy plugin:
 // `codex/hooks/hooks.json` runs `dist/codex-hook.js session-start` at a session's first prompt and
 // again after `/new`, and `dist/codex-hook.js session-end` when Codex unloads a thread.
 //
