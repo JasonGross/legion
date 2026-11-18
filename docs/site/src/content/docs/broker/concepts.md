@@ -940,8 +940,9 @@ What the airlock does not stop is as much of the design as what it does:
 
 A person approves a secret request on the broker's own approval page, never in Dispatch. The
 broker writes nothing in Dispatch: Dispatch's server reads the broker's pending list
-for the person signed in, and its Inbox lists each secret request as a link to that request's page
-on the broker, `<broker>/approve/<record>`, which the broker's answers name as `approve_url`. The
+for the person signed in, and its Inbox lists each pending secret request as a link to that
+request's page on the broker, `<broker>/approve/<record>`, which the broker's answers name as
+`approve_url` (an expired one is listed with no link, below). The
 page signs the person in to the broker itself, with OpenID Connect and the broker's own client (the
 deployment's Google Workspace, `BROKER_SIGNIN_*` in
 [Operate](/legion/broker/operate/#approval-sign-in)), only when they hold no live sign-in there,
@@ -1005,6 +1006,16 @@ A record is decided once. A second click, a concurrent one, or one after the rec
 nothing (`RECORD_TERMINAL`), and the page says what became of the record. A pending request nobody
 decides expires after 12 hours, a fixed time rather than
 a setting (`agentSecretPendingTTL` in `packages/envoy/cmd/broker/main.go`).
+
+A request or a machine login whose deadline passes before anybody decides it stays in its
+approver's Dispatch Inbox, marked **Expired** with its deadline, with no link to a page that
+decides it, until someone dismisses it with **Dismiss**. It is no longer counted as waiting on the
+person. The broker reads it as expired from the moment its deadline passes, before the sweep ends
+it and after, which is exactly what every decision of it refuses. A dismissal is the record's
+once, for every Inbox: the first person whose Inbox holds a shared request and who dismisses it
+takes it out of everyone's, and no route brings it back. The broker stores each dismissal
+(`credential_request_dismissals`); a request the sweep had already ended before it kept them was
+recorded as dismissed by `broker` and does not come back.
 
 A machine login is still decided in Dispatch, with its typed code
 ([Machine login](#machine-login)), and a person's revoke of a grant or a machine login is still made
