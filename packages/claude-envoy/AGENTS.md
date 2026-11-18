@@ -286,17 +286,20 @@ at a change of the binary it is pointed at.
   session (`codex exec --ephemeral`), whose thread Codex refuses `codex queue` for; the hook tells
   the model so. Codex starts one MCP server per thread (measured on 0.154.0), so one server per
   `codex` process owns the session (`src/codex/codex-owner.ts`): each server publishes
-  `codex-servers/<codex pid>/<seq>-<server pid>.json`, taking the next sequence number with an
-  exclusive create, so the order is the order of publication and no clock decides it, and the
-  owner is the live entry with the lowest number, which every server reads the same way, so no
-  file is taken over. An entry is gone only on `ESRCH` or a readable start that differs; one gone
-  on `ESRCH` is removed, since its name is never published again. The owner re-checks every 5 s.
-  The others stand by, serving only their thread's `dispatch` calls; their Envoy tools answer
-  `STANDBY_NOTE`. The `SessionEnd` hook leaves an ended marker beside the record
-  (`markSessionEnded`: never a rewrite of the record) and then touches the record's times, which
-  is what makes the owner's watcher read the marker; the delivery then refuses every write until
-  the next session's record arrives or a `SessionStart` for the same session (`/resume`) removes
-  the marker, which it does before it writes the record. A takeover binds no ended session. Codex runs `SessionEnd` only when it unloads the thread (`thread_unload_delay`, 60 s by
+  `codex-servers/<codex pid>/<seq>.json`, written whole to a temporary file and linked into place,
+  which fails when the number is taken, so the order is the order of publication and no clock
+  decides it, and the owner is the live entry with the lowest number, which every server reads the
+  same way, so no file is taken over. An entry is gone only on `ESRCH` or a readable start that
+  differs; no server removes another's entry, and the hook removes a dead codex process's entries.
+  The owner re-checks every 5 s and warns if it finds another owner. The others stand by, serving
+  only their thread's `dispatch` calls; their Envoy tools answer `STANDBY_NOTE`. The `SessionEnd`
+  hook leaves an ended marker beside the record (`markSessionEnded`: never a rewrite of the
+  record) and then touches the record's times; the owner watches the record (`watchRecord`, which
+  also reads it once as the watch begins, so an end marked before then is seen), and the delivery
+  then refuses every write until the next session's record arrives or a `SessionStart` for the
+  same session (`/resume`) removes the marker, which it does before it writes the record. A
+  takeover waits for a record whose session has not ended. Codex runs `SessionEnd` only after it
+  has stopped the thread's servers, when it unloads the thread (`thread_unload_delay`, 60 s by
   default, after it is idle with no subscriber), so a message sent between `/new` and then, or the
   new thread's first prompt, can still be queued into the old thread, and until every server
   started before the new thread's has exited, its Envoy tools answer that another server serves

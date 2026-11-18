@@ -269,9 +269,10 @@ Neither is an ephemeral session (`codex exec --ephemeral`), which no message cou
   calls. After `/new`, the owner moves the registration to the new session at its first prompt.
   Until then, a message to the old session can still be queued into it, since Codex runs the old
   thread's `SessionEnd` hook only when it unloads that thread: `thread_unload_delay` (60 s by
-  default, and configurable) after the thread is idle with no subscriber. Until the old thread's
-  server exits, the new thread's own Envoy tools (`envoy_send` and the rest) answer that another
-  server serves the session; messages to it arrive meanwhile, and its `dispatch` tool works.
+  default, and configurable) after the thread is idle with no subscriber, and after it has
+  stopped that thread's servers. Until every server started before the new thread's has exited,
+  the new thread's own Envoy tools (`envoy_send` and the rest) answer that another server serves
+  the session; messages to it arrive meanwhile, and its `dispatch` tool works.
   A fork or an ephemeral session (`codex exec --ephemeral`) keeps no transcript and is never
   registered, since Codex refuses `codex queue` for an ephemeral thread.
 - The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool

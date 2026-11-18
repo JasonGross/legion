@@ -61,6 +61,7 @@ import {
   SHARED_APP_SERVER_NOTE,
   sessionEnded,
   sharedAppServer,
+  watchRecord,
 } from "./codex-session-record"
 import {
   findTranscript,
@@ -250,6 +251,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const serversDirectory = codexServersDirectory(stateDirectory, codexPid)
   /** This server's entry, once `waitForOwnership` published it. */
   let self: CodexServerEntry | undefined
+  let stopWatchingRecord: () => void = () => undefined
+  let recheck: ReturnType<typeof setInterval> | undefined
   /** Whether session `sessionId` of this process has ended (`SessionEnd`'s marker). */
   const endedNow = (sessionId: string): Promise<boolean> =>
     sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
@@ -334,7 +337,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if (isStopping) return
     isStopping = true
     stopping.abort()
-    unwatchFile(recordFile)
+    stopWatchingRecord()
+    clearInterval(recheck)
     follower?.stop()
     stream?.stop()
     // The entry goes once the delivery's waiting lines are withdrawn, so a server that takes over
@@ -367,22 +371,26 @@ export async function runCodexEnvoyServer(): Promise<void> {
   // thread, and the others stand by, serving their thread's `dispatch` calls, until every server
   // older than them is gone.
   notReady = STANDBY_NOTE
-  self = await waitForOwnership(
+  const owning = await waitForOwnership(
     serversDirectory,
     process.pid,
     processStarted(process.pid) ?? null,
     stopping.signal,
+    (entry) => {
+      self = entry
+    },
   )
-  if (self === undefined) {
+  if (owning === undefined) {
     await stopped.promise
     await server.close().catch(() => undefined)
     return
   }
   notReady =
     "this session's Envoy side starts once Codex records the session at its first prompt; a fork or an ephemeral session, which keeps no transcript, is never registered"
-  // The owner looks again at each poll: a split that started anyway is said, not kept silent.
-  const owned = self
-  const recheck = setInterval(() => {
+  // The owner looks again every few seconds and warns if it finds another owner, which the order
+  // of publication rules out while every entry is readable.
+  const owned = owning
+  recheck = setInterval(() => {
     void stillOwner(serversDirectory, owned).then(
       (still) => {
         if (!still)
@@ -411,11 +419,13 @@ export async function runCodexEnvoyServer(): Promise<void> {
    *  state and waiting lines, the live view, and the transcript followed. The Envoy session code
    *  follows the hand-off file the hook wrote beside the record on its own. */
   let moveTo: (next: CodexSessionRecord) => void = () => undefined
-  // Watched from now, so a `/new` while the session starts is seen.
-  watchFile(recordFile, { interval: RECORD_POLL_MS }, () => {
-    void readCodexSessionRecord(recordFile).then(async (next) => {
-      if (next === undefined || !recordOfProcess(next, codexPid)) return
-      const ended = await endedNow(next.session_id)
+  // Watched from now, so a `/new` while the session starts is seen, and read once at once, so an
+  // end marked between the bind's own read and this watch is seen too.
+  stopWatchingRecord = watchRecord(
+    recordFile,
+    codexPid,
+    endedNow,
+    (next, ended) => {
       if (next.session_id === record?.session_id) {
         // The same session ended (`SessionEnd`), or runs again (`/resume`). Before the delivery
         // exists, its creation reads `recordEnded` instead.
@@ -429,8 +439,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
       record = next
       recordEnded = ended
       if (ready) moveTo(next)
-    })
-  })
+    },
+    RECORD_POLL_MS,
+  )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
   const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
     cwd: bound.cwd,

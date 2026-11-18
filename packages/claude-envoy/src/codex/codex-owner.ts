@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { link, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { processStarted } from "./codex-session-record"
 
@@ -10,12 +10,14 @@ import { processStarted } from "./codex-session-record"
  * `/btw` start one each for their fork). The record of the session the process runs is keyed by the
  * process, so every one of those servers would bind it and register the same session.
  *
- * So each server publishes an entry, `codex-servers/<codex pid>/<seq>-<server pid>.json`, taking
- * the next sequence number with an exclusive create, so two servers never hold one number and the
- * order is the order they published in, whatever the clock says. The owner is the live entry with
- * the lowest number. No file is taken over: every server reads the same entries and reaches the
- * same answer. The others stand by, serving their thread's `dispatch` calls, until every server
- * that published before them is gone.
+ * So each server publishes an entry, `codex-servers/<codex pid>/<seq>.json`, taking the next free
+ * sequence number by linking a fully written temporary file into place (`link` fails when the
+ * name exists), so two live entries never hold one number and the order is the order they
+ * published in, whatever the clock says. The owner is the live entry with the lowest number. No
+ * server removes another's entry, so a name a server judged dead and a name a later server took
+ * are never confused; the `SessionStart` hook removes a dead codex process's entries. Every server
+ * reads the same entries and reaches the same answer. The others stand by, serving their thread's
+ * `dispatch` calls, until every server that published before them is gone.
  */
 export interface CodexServerEntry {
   /** The publication number: lower owns. */
@@ -32,16 +34,17 @@ export function codexServersDirectory(stateDirectory: string, codexPid: number):
   return join(stateDirectory, "codex-servers", String(codexPid))
 }
 
-const ENTRY_NAME = /^(\d+)-(\d+)\.json$/
+const ENTRY_NAME = /^(\d+)\.json$/
 
-function entryName(entry: { readonly seq: number; readonly pid: number }): string {
-  return `${entry.seq}-${entry.pid}.json`
+function entryName(entry: { readonly seq: number }): string {
+  return `${entry.seq}.json`
 }
 
 /**
- * Publishes an entry for server `pid`, at the lowest sequence number above every entry there, and
- * answers it. The create is exclusive (`wx`), so a server that loses a number to another takes the
- * next one.
+ * Publishes an entry for server `pid`, at the lowest number above every entry there, and answers
+ * it. The entry is written whole to a temporary file and linked into place, and `link` fails when
+ * the name exists, so a server that loses a number to another takes the next one, and a reader
+ * never sees a half-written entry.
  */
 export async function registerServer(
   directory: string,
@@ -49,18 +52,21 @@ export async function registerServer(
   started: string | null,
 ): Promise<CodexServerEntry> {
   await mkdir(directory, { mode: 0o700, recursive: true })
-  let seq = Math.max(0, ...(await entryNames(directory)).map(({ seq: taken }) => taken)) + 1
-  for (;;) {
-    try {
-      await writeFile(join(directory, entryName({ pid, seq })), JSON.stringify({ started }), {
-        flag: "wx",
-        mode: 0o600,
-      })
-      return { pid, seq, started }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      seq++
+  const temporary = join(directory, `.${pid}.${process.hrtime.bigint()}.tmp`)
+  await writeFile(temporary, JSON.stringify({ pid, started }), { mode: 0o600 })
+  try {
+    let seq = Math.max(0, ...(await entryNames(directory)).map(({ seq: taken }) => taken)) + 1
+    for (;;) {
+      try {
+        await link(temporary, join(directory, entryName({ seq })))
+        return { pid, seq, started }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+        seq++
+      }
     }
+  } finally {
+    await rm(temporary, { force: true })
   }
 }
 
@@ -110,9 +116,7 @@ export function serverAlive(entry: CodexServerEntry, probe: ProcessProbe = SYSTE
   return entry.started === null || now === undefined || now === entry.started
 }
 
-async function entryNames(
-  directory: string,
-): Promise<{ seq: number; pid: number; name: string }[]> {
+async function entryNames(directory: string): Promise<{ seq: number; name: string }[]> {
   let names: string[]
   try {
     names = await readdir(directory)
@@ -121,58 +125,54 @@ async function entryNames(
   }
   return names.flatMap((name) => {
     const match = ENTRY_NAME.exec(name)
-    return match === null ? [] : [{ name, pid: Number(match[2]), seq: Number(match[1]) }]
+    return match === null ? [] : [{ name, seq: Number(match[1]) }]
   })
 }
 
 async function readEntries(directory: string): Promise<CodexServerEntry[]> {
   const entries: CodexServerEntry[] = []
-  for (const { name, pid, seq } of await entryNames(directory)) {
-    let started: string | null = null
+  for (const { name, seq } of await entryNames(directory)) {
     try {
       const parsed = JSON.parse(await readFile(join(directory, name), "utf8")) as {
+        pid?: unknown
         started?: unknown
       }
-      if (typeof parsed.started === "string") started = parsed.started
+      if (typeof parsed.pid !== "number") continue
+      entries.push({
+        pid: parsed.pid,
+        seq,
+        started: typeof parsed.started === "string" ? parsed.started : null,
+      })
     } catch {
-      // Being written, or removed: the name holds the order and the pid, and the start is unknown.
+      // Removed meanwhile: an entry is linked in whole, so it is never half-written.
     }
-    entries.push({ pid, seq, started })
   }
   return entries
 }
 
-/**
- * The live server that owns the session: the live entry with the lowest number. An entry whose
- * pid answers `ESRCH` is removed on the way: its name is never published again, since numbers only
- * grow, so removing it cannot remove a live server's entry.
- */
+/** The live server that owns the session: the live entry with the lowest number. */
 export async function currentOwner(
   directory: string,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<CodexServerEntry | undefined> {
-  const live: CodexServerEntry[] = []
-  for (const entry of await readEntries(directory)) {
-    if (gone(entry.pid, probe)) {
-      await rm(join(directory, entryName(entry)), { force: true }).catch(() => undefined)
-      continue
-    }
-    if (serverAlive(entry, probe)) live.push(entry)
-  }
-  live.sort((a, b) => a.seq - b.seq || a.pid - b.pid)
+  const live = (await readEntries(directory)).filter((entry) => serverAlive(entry, probe))
+  live.sort((a, b) => a.seq - b.seq)
   return live[0]
 }
 
 /**
  * Resolves with `self`'s entry once it owns the session, looking every `pollMs`, or undefined when
- * `signal` aborts. It publishes the entry first, and again at any look that finds it gone (a
- * failed write, or a directory someone removed), which puts the server at the back of the order.
+ * `signal` aborts. It publishes the entry first, and tells `published` each entry it publishes, so
+ * a server that stops while it stands by removes its own. A look that finds the entry gone (a
+ * failed write, or a directory someone removed) publishes it again, at the back of the order,
+ * after removing the one it had. The server owns when the owner is any entry of its own pid.
  */
 export function waitForOwnership(
   directory: string,
   pid: number,
   started: string | null,
   signal: AbortSignal,
+  published: (entry: CodexServerEntry) => void = () => undefined,
   pollMs = 1_000,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<CodexServerEntry | undefined> {
@@ -181,15 +181,14 @@ export function waitForOwnership(
     let timer: ReturnType<typeof setTimeout> | undefined
     const look = async (): Promise<void> => {
       if (signal.aborted) return done(undefined)
-      const names = await entryNames(directory)
-      if (
-        self === undefined ||
-        !names.some((entry) => entry.seq === self?.seq && entry.pid === pid)
-      ) {
+      const entries = await readEntries(directory)
+      if (self === undefined || !entries.some((entry) => entry.seq === self?.seq)) {
+        if (self !== undefined) await unregisterServer(directory, self)
         self = await registerServer(directory, pid, started)
+        published(self)
       }
       const owner = await currentOwner(directory, probe)
-      if (owner?.seq === self.seq && owner.pid === pid) done(self)
+      if (owner?.pid === pid) done(self)
       else timer = setTimeout(() => void look().catch(retry), pollMs)
     }
     const retry = (): void => {
@@ -203,13 +202,13 @@ export function waitForOwnership(
   })
 }
 
-/** Whether `self` still owns the session: the owner re-checks at each look, so a split that
- *  started anyway (an entry another server could not see when it decided) ends. */
+/** Whether `self` still owns the session. The owner re-checks every few seconds and warns when it
+ *  finds another owner, which the order of publication rules out while every entry is readable. */
 export async function stillOwner(
   directory: string,
   self: CodexServerEntry,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<boolean> {
   const owner = await currentOwner(directory, probe)
-  return owner === undefined || (owner.seq === self.seq && owner.pid === self.pid)
+  return owner === undefined || owner.pid === self.pid
 }

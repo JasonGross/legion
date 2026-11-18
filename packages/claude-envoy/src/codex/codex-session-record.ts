@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { readFileSync, readlinkSync } from "node:fs"
+import { readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
 import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -65,6 +65,29 @@ export async function markSessionEnded(
   await writeFile(marker, "", { mode: 0o600 })
   const now = new Date()
   await utimes(codexSessionRecordFile(stateDirectory, pid), now, now)
+}
+
+/**
+ * Calls `changed` with the record and whether its session has ended each time the record file's stat
+ * changes (a new record, or `markSessionEnded`'s touch), and once at once: a marker left before the
+ * watch began, when nothing would move the stat again, is read all the same. Answers the stop.
+ */
+export function watchRecord(
+  file: string,
+  pid: number,
+  ended: (sessionId: string) => Promise<boolean>,
+  changed: (record: CodexSessionRecord, ended: boolean) => void,
+  intervalMs: number,
+): () => void {
+  const look = (): void => {
+    void readCodexSessionRecord(file).then(async (record) => {
+      if (record === undefined || !recordOfProcess(record, pid)) return
+      changed(record, await ended(record.session_id))
+    })
+  }
+  watchFile(file, { interval: intervalMs }, look)
+  look()
+  return () => unwatchFile(file, look)
 }
 
 /** Whether the marker `codexEndedFile` names is there. */

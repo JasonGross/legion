@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { readdirSync, rmSync, statSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
@@ -15,7 +15,9 @@ import {
   codexEndedFile,
   codexSessionRecordFile,
   markSessionEnded,
+  processStarted,
   sessionEnded,
+  watchRecord,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 
@@ -43,11 +45,10 @@ describe("the owner of a codex process's Envoy session", () => {
     expect((await currentOwner(directory, both))?.pid).toBe(101)
     expect(await stillOwner(directory, first, both)).toBe(true)
     expect(await stillOwner(directory, second, both)).toBe(false)
-    // The first is gone: the second owns, and the dead entry is pruned on the way.
+    // The first is gone: the second owns. No server removes another's entry.
     expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
-    expect(readdirSync(directory)).toEqual([`${second.seq}-102.json`])
     await unregisterServer(directory, second)
-    expect(readdirSync(directory)).toEqual([])
+    expect(readdirSync(directory)).toEqual([`${first.seq}.json`])
   })
 
   test("is gone only on ESRCH or a readable start that differs", () => {
@@ -60,11 +61,14 @@ describe("the owner of a codex process's Envoy session", () => {
     expect(serverAlive(entry, probeOf({}))).toBe(false)
   })
 
-  test("an entry still being written counts by its name, its start unknown", async () => {
+  test("two servers that publish at once never hold one number", async () => {
     const directory = join(root, "b")
-    await registerServer(directory, 102, "s102")
-    writeFileSync(join(directory, "0-103.json"), "")
-    expect((await currentOwner(directory, probeOf({ 102: "s102", 103: "s103" })))?.pid).toBe(103)
+    const entries = await Promise.all(
+      Array.from({ length: 20 }, (_, index) => registerServer(directory, 200 + index, null)),
+    )
+    expect(new Set(entries.map((entry) => entry.seq)).size).toBe(20)
+    // Only whole entries are there: the temporary files are gone.
+    expect(readdirSync(directory).filter((name) => name.endsWith(".tmp"))).toEqual([])
   })
 
   test("a server whose entry vanished publishes it again, at the back", async () => {
@@ -72,13 +76,25 @@ describe("the owner of a codex process's Envoy session", () => {
     await registerServer(directory, 101, "s101")
     const abort = new AbortController()
     const probe = probeOf({ 101: "s101", [process.pid]: "me" })
-    const waited = waitForOwnership(directory, process.pid, "me", abort.signal, 10, probe)
+    const published: number[] = []
+    const waited = waitForOwnership(
+      directory,
+      process.pid,
+      "me",
+      abort.signal,
+      (entry) => published.push(entry.seq),
+      10,
+      probe,
+    )
     await Bun.sleep(30)
-    for (const name of readdirSync(directory)) {
-      if (name.endsWith(`-${process.pid}.json`)) rmSync(join(directory, name))
-    }
+    expect(published).toHaveLength(1)
+    rmSync(join(directory, `${published[0]}.json`))
     await Bun.sleep(50)
-    expect(readdirSync(directory).some((name) => name.endsWith(`-${process.pid}.json`))).toBe(true)
+    // Published again, behind the live server that published first, and reported, so the server
+    // can remove it when it stops.
+    expect(published).toHaveLength(2)
+    expect(published[1]).toBeGreaterThan(1)
+    expect(readdirSync(directory)).toContain(`${published[1]}.json`)
     abort.abort()
     expect(await waited).toBeUndefined()
   })
@@ -131,5 +147,34 @@ describe("a session's end", () => {
     expect(await sessionEnded(codexEndedFile(root, 7, "s-1"))).toBe(true)
     expect(statSync(record).mtimeMs).toBeGreaterThan(before)
     expect(await sessionEnded(codexEndedFile(root, 7, "s-2"))).toBe(false)
+  })
+})
+
+describe("watching the record", () => {
+  const root = temporaryDirectory("codex-watch-record")
+
+  test("reads an end marked before the watch began, though nothing moves the record again", async () => {
+    const record = codexSessionRecordFile(root, 9)
+    await writeCodexSessionRecord(record, {
+      codex_executable: null,
+      codex_home: "/h",
+      codex_started: processStarted(process.pid) ?? "1",
+      cwd: "/w",
+      session_id: "s-1",
+      source: null,
+      transcript_path: "/t",
+    })
+    await markSessionEnded(root, 9, "s-1")
+    const seen: [string, boolean][] = []
+    const stop = watchRecord(
+      record,
+      process.pid,
+      (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
+      (next, ended) => seen.push([next.session_id, ended]),
+      50,
+    )
+    await Bun.sleep(100)
+    stop()
+    expect(seen[0]).toEqual(["s-1", true])
   })
 })
