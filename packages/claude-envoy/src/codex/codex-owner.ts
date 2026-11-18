@@ -157,33 +157,42 @@ async function entryNames(directory: string): Promise<{ seq: number; name: strin
   })
 }
 
-async function readEntries(directory: string): Promise<CodexServerEntry[]> {
+/** The entries `directory` holds, or undefined when one of them could not be read yet: a numbered
+ *  file that is still empty or half-written (placed by an exclusive create where the file system
+ *  has no hard links), which no look may decide past. */
+async function readEntries(directory: string): Promise<CodexServerEntry[] | undefined> {
   const entries: CodexServerEntry[] = []
   for (const { name, seq } of await entryNames(directory)) {
+    let text: string
     try {
-      const parsed = JSON.parse(await readFile(join(directory, name), "utf8")) as {
-        pid?: unknown
-        started?: unknown
-      }
-      if (typeof parsed.pid !== "number") continue
+      text = await readFile(join(directory, name), "utf8")
+    } catch {
+      continue // Removed meanwhile.
+    }
+    try {
+      const parsed = JSON.parse(text) as { pid?: unknown; started?: unknown }
+      if (typeof parsed.pid !== "number") return undefined
       entries.push({
         pid: parsed.pid,
         seq,
         started: typeof parsed.started === "string" ? parsed.started : null,
       })
     } catch {
-      // Removed meanwhile: an entry is linked in whole, so it is never half-written.
+      return undefined
     }
   }
   return entries
 }
 
-/** The live server that owns the session: the live entry with the lowest number. */
+/** The live server that owns the session: the live entry with the lowest number; undefined when
+ *  there is none, or when an entry could not be read yet and no answer can be given. */
 export async function currentOwner(
   directory: string,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<CodexServerEntry | undefined> {
-  const live = (await readEntries(directory)).filter((entry) => serverAlive(entry, probe))
+  const entries = await readEntries(directory)
+  if (entries === undefined) return undefined
+  const live = entries.filter((entry) => serverAlive(entry, probe))
   live.sort((a, b) => a.seq - b.seq)
   return live[0]
 }
@@ -210,7 +219,10 @@ export function waitForOwnership(
     const look = async (): Promise<void> => {
       if (signal.aborted) return done(undefined)
       const entries = await readEntries(directory)
-      if (self === undefined || !entries.some((entry) => entry.seq === self?.seq)) {
+      if (
+        entries !== undefined &&
+        (self === undefined || !entries.some((entry) => entry.seq === self?.seq))
+      ) {
         if (self !== undefined) await unregisterServer(directory, self)
         self = await registerServer(directory, pid, started)
         published(self)
@@ -237,6 +249,8 @@ export async function stillOwner(
   self: CodexServerEntry,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<boolean> {
+  const entries = await readEntries(directory)
+  if (entries === undefined) return true
   const owner = await currentOwner(directory, probe)
   return owner === undefined || owner.pid === self.pid
 }

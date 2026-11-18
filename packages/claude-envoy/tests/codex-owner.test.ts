@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, rmSync, statSync } from "node:fs"
+import { readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
@@ -69,6 +69,15 @@ describe("the owner of a codex process's Envoy session", () => {
     expect(new Set(entries.map((entry) => entry.seq)).size).toBe(20)
     // Only whole entries are there: the temporary files are gone.
     expect(readdirSync(directory).filter((name) => name.endsWith(".tmp"))).toEqual([])
+  })
+
+  test("no owner is decided while an entry is still being written", async () => {
+    const directory = join(root, "partial")
+    await registerServer(directory, 102, "s102")
+    writeFileSync(join(directory, "0.json"), "")
+    expect(await currentOwner(directory, probeOf({ 102: "s102" }))).toBeUndefined()
+    writeFileSync(join(directory, "0.json"), JSON.stringify({ pid: 103, started: "s103" }))
+    expect((await currentOwner(directory, probeOf({ 102: "s102", 103: "s103" })))?.pid).toBe(103)
   })
 
   test("a server whose entry vanished publishes it again, at the back", async () => {
