@@ -47,17 +47,21 @@ export interface CodexDelivery {
   turnStarted(): void
   /** The transcript says the turn ended: anything still waiting goes to `codex queue`. */
   turnEnded(): Promise<void>
-  /** The session ended (`SessionEnd`, which Codex runs when it unloads the thread, up to a minute
-   *  after `/new`, or at exit): every write from now is refused, so its Envoy frame stays unanswered
-   *  and is sent again, until `rebind` names the session that follows. */
+  /** The session ended (`SessionEnd`, which Codex runs when it unloads the thread,
+   *  `thread_unload_delay` after it is idle with no subscriber, 60 s by default, or at exit): every
+   *  write from now is refused, so its Envoy frame stays unanswered and is sent again, until
+   *  `rebind` names a session that has not ended or `sessionResumed` says this one runs again. */
   sessionEnded(): void
+  /** The session that had ended runs again (`/resume`): writes are taken again. */
+  sessionResumed(): Promise<void>
   /** The process moved to another session (`/new`): no turn of it runs yet, and what waited for
-   *  the old one goes to the new one. */
-  rebind(): Promise<void>
+   *  the old one goes to the new one, unless the new one has already ended (`ended`). */
+  rebind(ended?: boolean): Promise<void>
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
-  /** Stops watching waiting lines; a write still waiting rejects. */
-  stop(): void
+  /** Stops watching waiting lines; a write still waiting rejects. Resolves once every waiting line
+   *  is withdrawn or found taken. */
+  stop(): Promise<void>
 }
 
 const WAITING_POLL_MS = 250
@@ -155,10 +159,14 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       ended = true
       running = false
     },
-    async rebind() {
+    async sessionResumed() {
       ended = false
-      running = false
       await sweep()
+    },
+    async rebind(endedNow = false) {
+      ended = endedNow
+      running = false
+      if (!ended) await sweep()
     },
     turnRunning: () => running,
     stop() {
@@ -169,7 +177,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       // hook took first was delivered, and its write resolves.
       const left = [...waiting]
       waiting.clear()
-      void Promise.all(
+      return Promise.all(
         left.map(async ([name, waiter]) => {
           if (await withdrawWaiting(waiter.directory, name)) {
             waiter.reject(
@@ -180,7 +188,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
             waiter.resolve()
           }
         }),
-      )
+      ).then(() => undefined)
     },
   }
 }

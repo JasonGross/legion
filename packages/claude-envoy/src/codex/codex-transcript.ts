@@ -262,6 +262,8 @@ export function followTranscript(
 
 /** How much `latestTurnCwd` reads at a time, walking back from the transcript's end. */
 const TURN_CWD_CHUNK_BYTES = 256 * 1024
+/** The longest line `latestTurnCwd` keeps whole; a `turn_context` line is a few kilobytes. */
+const TURN_CWD_LINE_MAX_BYTES = 1024 * 1024
 
 /**
  * The directory the session's newest turn ran in, from the last `turn_context` line of its
@@ -276,22 +278,29 @@ export async function latestTurnCwd(transcriptPath: string | null): Promise<stri
   try {
     handle = await open(transcriptPath, "r")
     let end = (await handle.stat()).size
-    // The bytes after the last newline read so far: the start of a line a later chunk completes.
+    // The bytes after the earliest newline read so far: the start of a line a later chunk completes.
     let carry = Buffer.alloc(0)
+    // Set once that line has grown past `TURN_CWD_LINE_MAX_BYTES`: no `turn_context` is that long,
+    // so the rest of it is skipped rather than copied at every chunk.
+    let dropping = false
     while (end > 0) {
       const length = Math.min(end, TURN_CWD_CHUNK_BYTES)
       const chunk = Buffer.alloc(length)
       await handle.read(chunk, 0, length, end - length)
       end -= length
-      const joined = Buffer.concat([chunk, carry])
+      const joined = dropping ? chunk : Buffer.concat([chunk, carry])
       const firstNewline = end === 0 ? -1 : joined.indexOf(10)
       if (firstNewline < 0 && end > 0) {
         // No line starts in this chunk: all of it belongs to a line an earlier chunk completes.
-        carry = joined
+        if (!dropping && joined.length > TURN_CWD_LINE_MAX_BYTES) dropping = true
+        carry = dropping ? Buffer.alloc(0) : joined
         continue
       }
+      // While dropping, what follows this chunk's last newline is the over-long line's start.
+      const stop = dropping ? Math.max(joined.lastIndexOf(10), 0) : joined.length
+      dropping = false
       const whole = joined
-        .subarray(firstNewline + 1)
+        .subarray(firstNewline + 1, Math.max(stop, firstNewline + 1))
         .toString("utf8")
         .split("\n")
       carry = firstNewline < 0 ? Buffer.alloc(0) : joined.subarray(0, firstNewline)
@@ -328,6 +337,9 @@ function turnContextCwd(line: string): string | undefined {
  * A found path is kept for the life of the process, since the scan reads the whole tree.
  */
 const foundTranscripts = new Map<string, string>()
+const missedTranscripts = new Map<string, number>()
+/** How long a thread `findTranscript` found no transcript for is not looked for again. */
+const TRANSCRIPT_MISS_MS = 30_000
 
 /** Whether `id` has the shape of a Codex thread id: letters, digits and hyphens, nothing a path
  *  or a glob could read otherwise. */
@@ -340,6 +352,10 @@ export async function findTranscript(home: string, threadId: string): Promise<st
   const key = `${home}\0${threadId}`
   const known = foundTranscripts.get(key)
   if (known !== undefined) return known
+  // A thread with no transcript (a fork's) is looked for again only after a while, not at every
+  // call, since the scan reads the whole tree.
+  const missed = missedTranscripts.get(key)
+  if (missed !== undefined && Date.now() - missed < TRANSCRIPT_MISS_MS) return null
   const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`)
   const found: string[] = []
   try {
@@ -352,5 +368,6 @@ export async function findTranscript(home: string, threadId: string): Promise<st
   const newest = found.sort().at(-1)
   // A thread's transcript keeps its path, so a found one is not searched for again.
   if (newest !== undefined) foundTranscripts.set(key, newest)
+  else missedTranscripts.set(key, Date.now())
   return newest ?? null
 }

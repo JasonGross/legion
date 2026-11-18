@@ -42,9 +42,16 @@ import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stre
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
 import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
-import { type CodexOwner, codexOwnerFile, releaseOwner, waitForOwner } from "./codex-owner"
+import {
+  type CodexServerEntry,
+  codexServersDirectory,
+  registerServer,
+  unregisterServer,
+  waitForOwnership,
+} from "./codex-owner"
 import {
   type CodexSessionRecord,
+  codexEndedFile,
   codexHome,
   codexPluginDataDirectory,
   codexSessionRecordFile,
@@ -52,6 +59,7 @@ import {
   readCodexSessionRecord,
   recordOfProcess,
   SHARED_APP_SERVER_NOTE,
+  sessionEnded,
   sharedAppServer,
 } from "./codex-session-record"
 import {
@@ -97,6 +105,10 @@ const DispatchToolArguments = z.object({
   args: z.array(z.string()),
   stdin: z.string().optional(),
 })
+
+/** Why a standby server's Envoy tools do not run (`./codex-owner`). */
+const STANDBY_NOTE =
+  "another of this codex process's plugin servers serves its Envoy session, because Codex starts one server per thread and one of them owns the session; after /new, this thread's Envoy tools start once Codex unloads the previous thread's server, thread_unload_delay (60 s by default) after that thread went idle with no subscriber, and messages to this session arrive meanwhile; the dispatch tool works now"
 
 /**
  * The Codex thread whose turn made a tool call, from the request's `_meta`: Codex 0.154.0 sends
@@ -194,17 +206,22 @@ function stateDirectoryFor(pluginRoot: string): string {
   )
 }
 
-/** Resolves with the record once the `SessionStart` hook has written it, polling the file. */
+/** Resolves with the record once the `SessionStart` hook has written it for a session that has not
+ *  ended, polling the file. */
 function waitForRecord(
   file: string,
   pid: number,
   signal: AbortSignal,
+  ended: (sessionId: string) => Promise<boolean>,
 ): Promise<CodexSessionRecord | undefined> {
   return new Promise((done) => {
     const look = (): void => {
-      void readCodexSessionRecord(file).then((record) => {
-        // A record an earlier process with the same id left behind names no session of this one.
+      void readCodexSessionRecord(file).then(async (record) => {
+        // A record an earlier process with the same id left behind names no session of this one,
+        // and a session that has ended is not registered again (a takeover after `/new`, before
+        // the new thread's first prompt).
         if (record === undefined || !recordOfProcess(record, pid)) return
+        if (await ended(record.session_id)) return
         unwatchFile(file, look)
         done(record)
       })
@@ -227,8 +244,15 @@ export async function runCodexEnvoyServer(): Promise<void> {
    *  acts as the thread that calls it. */
   const shared = sharedAppServer(codexPid)
   const recordFile = codexSessionRecordFile(stateDirectory, codexPid)
-  const ownerFile = codexOwnerFile(stateDirectory, codexPid)
-  const self: CodexOwner = { pid: process.pid, started: processStarted(process.pid) ?? "" }
+  const serversDirectory = codexServersDirectory(stateDirectory, codexPid)
+  const self: CodexServerEntry = {
+    pid: process.pid,
+    since: Date.now(),
+    started: processStarted(process.pid) ?? null,
+  }
+  /** Whether session `sessionId` of this process has ended (`SessionEnd`'s marker). */
+  const endedNow = (sessionId: string): Promise<boolean> =>
+    sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
   const configFile = sessionConfigFile("codex", process.env)
   const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
@@ -310,16 +334,19 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if (isStopping) return
     isStopping = true
     stopping.abort()
-    void releaseOwner(ownerFile, self).catch(() => undefined)
     unwatchFile(recordFile)
     follower?.stop()
     stream?.stop()
-    delivery?.stop()
+    // The entry goes once the delivery's waiting lines are withdrawn, so a server that takes over
+    // never discards a line this one still answers for.
+    const withdrawn = (delivery?.stop() ?? Promise.resolve()).finally(() =>
+      unregisterServer(serversDirectory, self).catch(() => undefined),
+    )
     if (session === undefined) {
-      stopped.resolve()
+      void withdrawn.finally(stopped.resolve)
       return
     }
-    void session.shutdown().finally(stopped.resolve)
+    void Promise.all([withdrawn, session.shutdown()]).finally(stopped.resolve)
   }
   process.stdin.once("end", stop)
   process.once("SIGTERM", stop)
@@ -335,22 +362,25 @@ export async function runCodexEnvoyServer(): Promise<void> {
     return
   }
   // One server per codex process owns its Envoy session (`./codex-owner`): Codex starts one per
-  // thread, and the others stand by, serving their thread's `dispatch` calls, until it is gone.
-  notReady =
-    "another of this codex process's plugin servers serves its Envoy session (Codex starts one per thread); this thread's dispatch tool works"
-  if (!(await waitForOwner(ownerFile, self, stopping.signal))) {
+  // thread, and the others stand by, serving their thread's `dispatch` calls, until every server
+  // older than them is gone.
+  await registerServer(serversDirectory, self)
+  notReady = STANDBY_NOTE
+  if (!(await waitForOwnership(serversDirectory, self, stopping.signal))) {
     await stopped.promise
     await server.close().catch(() => undefined)
     return
   }
   notReady = "this session's Envoy side starts at its first prompt"
-  record = await waitForRecord(recordFile, codexPid, stopping.signal)
+  record = await waitForRecord(recordFile, codexPid, stopping.signal, endedNow)
   if (record === undefined) {
     await stopped.promise
     await server.close().catch(() => undefined)
     return
   }
   const bound = record
+  /** Whether the session the record names has ended, as its marker last said. */
+  let recordEnded = false
   // Lines an earlier owner of this session left waiting: that server is gone, so no write waits on
   // them, and Envoy sends each one's frame again.
   await discardWaiting(codexInboxDirectory(stateDirectory, bound.session_id))
@@ -363,18 +393,21 @@ export async function runCodexEnvoyServer(): Promise<void> {
   let moveTo: (next: CodexSessionRecord) => void = () => undefined
   // Watched from now, so a `/new` while the session starts is seen.
   watchFile(recordFile, { interval: RECORD_POLL_MS }, () => {
-    void readCodexSessionRecord(recordFile).then((next) => {
+    void readCodexSessionRecord(recordFile).then(async (next) => {
       if (next === undefined || !recordOfProcess(next, codexPid)) return
+      const ended = await endedNow(next.session_id)
       if (next.session_id === record?.session_id) {
-        // The same session, ended (`SessionEnd`): nothing is delivered to it from now.
-        if (next.ended && record?.ended !== true) {
-          record = next
-          // Before the delivery exists, its creation reads `record.ended` instead.
-          delivery?.sessionEnded()
+        // The same session ended (`SessionEnd`), or runs again (`/resume`). Before the delivery
+        // exists, its creation reads `recordEnded` instead.
+        if (ended !== recordEnded) {
+          recordEnded = ended
+          if (ended) delivery?.sessionEnded()
+          else void delivery?.sessionResumed().catch((error: unknown) => warn(messageFor(error)))
         }
         return
       }
       record = next
+      recordEnded = ended
       if (ready) moveTo(next)
     })
   })
@@ -428,8 +461,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
     warn,
   })
   delivery = codexDelivery
-  // An end the watcher saw before the delivery existed, or a record already ended when bound.
-  if (record?.ended === true) codexDelivery.sessionEnded()
+  // An end the watcher saw before the delivery existed.
+  if (recordEnded) codexDelivery.sessionEnded()
 
   /** Reads the transcript of the session now bound into the delivery's turn state and the live
    *  view, from its first line; a `/new` starts this again on the new session's transcript. */
@@ -453,12 +486,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
   }
 
   moveTo = (next) => {
-    void codexDelivery
-      .rebind()
-      .then(() => {
-        if (record?.ended === true) codexDelivery.sessionEnded()
-      })
-      .catch((error: unknown) => warn(messageFor(error)))
+    void codexDelivery.rebind(recordEnded).catch((error: unknown) => warn(messageFor(error)))
     stream?.rebind(next.session_id)
     follow(next.transcript_path)
   }

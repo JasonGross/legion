@@ -14,8 +14,10 @@ import { pruneStateDirectory } from "../session-state"
  * environment and no session id, and runs the plugin's hooks as children of that same process
  * with the session's id in their input. So the `SessionStart` hook writes this record under the
  * `codex` process's id, and the server, whose parent that process is, reads it. `SessionStart`
- * runs at the session's first prompt and again after `/new`, with the new session's id, so the
- * server follows the record to each session the process runs. Measured on Codex CLI 0.154.0.
+ * runs at the session's first prompt and again after `/new`, with the new session's id. Codex
+ * starts one server per thread, so a process can have several; the one that owns the process's
+ * session (`./codex-owner`) follows the record to each session the process runs. Measured on Codex
+ * CLI 0.154.0.
  */
 export const CodexSessionRecord = z.object({
   session_id: z.string().min(1),
@@ -30,15 +32,31 @@ export const CodexSessionRecord = z.object({
    *  process that had the same id, and names nothing the server runs under; the hook writes no
    *  record where the start cannot be read. Null only in a record of an earlier build. */
   codex_started: z.string().nullable().default(null),
-  /** Set by the `SessionEnd` hook when this session ended (`/new`, exit): no message is delivered
-   *  to it from then until the next `SessionStart` names the session that follows. */
-  ended: z.boolean().default(false),
 })
 export type CodexSessionRecord = z.infer<typeof CodexSessionRecord>
 
 /** The file the record for the `codex` process `pid` lives in. */
 export function codexSessionRecordFile(stateDirectory: string, pid: number): string {
   return join(stateDirectory, "codex-sessions", `${pid}.json`)
+}
+
+/**
+ * The marker the `SessionEnd` hook leaves when session `sessionId` of `codex` process `pid` ended:
+ * a file of its own beside the record, so the hook never rewrites a record a `SessionStart` may be
+ * writing at that moment. A `SessionStart` that names the session again (`/resume`) removes it.
+ */
+export function codexEndedFile(stateDirectory: string, pid: number, sessionId: string): string {
+  return join(stateDirectory, "codex-sessions", `${pid}.${encodeURIComponent(sessionId)}.ended`)
+}
+
+/** Whether the marker `codexEndedFile` names is there. */
+export async function sessionEnded(file: string): Promise<boolean> {
+  try {
+    await readFile(file)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Writes the record whole, through a temporary file renamed into place. */
@@ -164,7 +182,8 @@ export function recordOfProcess(record: CodexSessionRecord, pid: number): boolea
  * several sessions in one process: a later plain `codex` reuses one `codex agents` started, and
  * Codex 0.170.0's terminal runs every session in a background `codex app-server --managed-daemon`
  * (measured on 0.170.0). This plugin keys a session by its process, so there two sessions would
- * share one record and one hand-off, and one would take the other's identity, so it stands down.
+ * share one record and one hand-off, and one would take the other's identity, so it registers none
+ * of them with Envoy; `dispatch` still acts as the thread that calls it.
  */
 export function sharedAppServer(pid: number): boolean {
   let argv: string[]
@@ -223,12 +242,17 @@ export function codexSubcommand(args: readonly string[]): string | undefined {
 export const SHARED_APP_SERVER_NOTE =
   "Codex runs this session in its shared app server (`codex app-server`), which runs several sessions in one process, so the Envoy plugin does not register it with Envoy: it receives no Envoy messages and does not show on Dispatch's Agents page. Its `dispatch` tool works, acting as this session."
 
-/** Removes the records of `codex` processes that have exited, so a later process that reuses a pid
- *  never finds one. */
+/** Removes what `codex` processes that have exited left (their records, ended markers and server
+ *  entries), so a later process that reuses a pid never finds any of it. */
 export async function pruneCodexSessionRecords(stateDirectory: string): Promise<void> {
+  // Records and ended markers, then the server entries (`./codex-owner`), of exited codex pids.
   await pruneStateDirectory(join(stateDirectory, "codex-sessions"), (file) => {
-    const match = /^(\d+)\.json$/.exec(basename(file))
+    const match = /^(\d+)\.(?:json|.+\.ended)$/.exec(basename(file))
     return match !== null && !processExists(Number(match[1]))
+  })
+  await pruneStateDirectory(join(stateDirectory, "codex-servers"), (file) => {
+    const name = basename(file)
+    return /^\d+$/.test(name) && !processExists(Number(name))
   })
 }
 

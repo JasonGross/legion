@@ -254,6 +254,7 @@ they get no Envoy messages and do not show on the Agents page, and the hook tell
 Everything else still runs there: the `dispatch` tool, as the session that calls it, and the
 `SessionStart` hooks (the open-asks summary, the dispatch-first skill and the answers list).
 A fork (`/side`, `/btw`) is never registered: its session's registration stays where it was.
+Neither is an ephemeral session (`codex exec --ephemeral`), which no message could reach.
 
 - `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
   `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
@@ -267,7 +268,12 @@ A fork (`/side`, `/btw`) is never registered: its session's registration stays w
   (`src/codex/codex-owner.ts`) and the others stand by, serving only their thread's `dispatch`
   calls. After `/new`, the owner moves the registration to the new session at its first prompt.
   Until then, a message to the old session can still be queued into it, since Codex runs the old
-  thread's `SessionEnd` hook only when it unloads that thread (up to a minute later by default).
+  thread's `SessionEnd` hook only when it unloads that thread: `thread_unload_delay` (60 s by
+  default, and configurable) after the thread is idle with no subscriber. Until the old thread's
+  server exits, the new thread's own Envoy tools (`envoy_send` and the rest) answer that another
+  server serves the session; messages to it arrive meanwhile, and its `dispatch` tool works.
+  A fork or an ephemeral session (`codex exec --ephemeral`) keeps no transcript and is never
+  registered, since Codex refuses `codex queue` for an ephemeral thread.
 - The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
   call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
 - A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few

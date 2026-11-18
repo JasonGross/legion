@@ -217,7 +217,13 @@ describe("createCodexDelivery", () => {
     await delivery.rebind()
     await delivery.deliver({ content: "to the next session" })
     expect(queued).toEqual(["to the next session"])
-    delivery.stop()
+    // A rebind to a session that has already ended stays refused, and a resume takes writes again.
+    await delivery.rebind(true)
+    await expect(delivery.deliver({ content: "into an ended session" })).rejects.toThrow("ended")
+    await delivery.sessionResumed()
+    await delivery.deliver({ content: "after /resume" })
+    expect(queued).toEqual(["to the next session", "after /resume"])
+    await delivery.stop()
   })
 
   test("stopping rejects a line still waiting and removes it, so Envoy's resend is its one copy", async () => {
