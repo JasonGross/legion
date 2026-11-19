@@ -145,14 +145,21 @@ describe("createCodexDelivery", () => {
   test("a codex queue failure rejects the write, so the frame is sent again", async () => {
     const idle = harness(inbox(), true)
     await expect(idle.delivery.deliver({ content: "x" })).rejects.toThrow("codex queue exited 1")
-    idle.delivery.stop()
+    await idle.delivery.stop()
     const busy = harness(inbox(), true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
+    // A handler is on the write from the start: its rejection lands while turnEnded's sweep runs,
+    // and one with no handler by then is an unhandled error under Bun. (`expect(written).rejects`
+    // here would not do: Bun runs it at once and spins until the promise settles.)
+    const outcome = written.then(
+      () => new Error("the write resolved"),
+      (error: unknown) => error,
+    )
     await Bun.sleep(20)
     await busy.delivery.turnEnded()
-    await expect(written).rejects.toThrow("codex queue exited 1")
-    busy.delivery.stop()
+    expect(String(await outcome)).toContain("codex queue exited 1")
+    await busy.delivery.stop()
   })
 
   test("after /new a line waiting for the old session is queued for the new one", async () => {
