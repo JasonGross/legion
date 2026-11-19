@@ -412,15 +412,17 @@ type airlockName struct {
 // requestWaitStep is how often a held read reads its request again.
 const requestWaitStep = 500 * time.Millisecond
 
-// readRequest answers one of the calling session's requests. With ?wait=N, N a whole number of
-// seconds from 1 to record.MaxRequestWaitSeconds, it holds the read while the request is pending
-// (readHeld) and answers the first state that is not pending, or pending once N seconds have
-// passed since the request reached the broker (answer.Recorder.Arrived), so a slow proof check
-// shortens the hold rather than lengthening it. The state it reads is the database's, so a decision
-// made on either broker process — the approval page's, the model judge's, the sweeper's expiry,
-// the session's own cancel — is seen within one step of its commit. Any other wait is refused
-// REQUEST_WAIT_INPUT before any read; an absent or empty one answers at once, as before the
-// parameter.
+// readRequest answers one request to any enrollment of the principal that made it: the same
+// person, the same Legion claim, the same machine (requests.Machine.OwnerAndState), and a request
+// of an enrollment that records no owner to that enrollment alone. Everyone else is 403 NOT_YOURS.
+// With ?wait=N, N a whole number of seconds from 1 to record.MaxRequestWaitSeconds, it holds the
+// read while the request is pending (readHeld) and answers the first state that is not pending, or
+// pending once N seconds have passed since the request reached the broker
+// (answer.Recorder.Arrived), so a slow proof check shortens the hold rather than lengthening it.
+// The state it reads is the database's, so a decision made on either broker process — the
+// approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
+// within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
+// absent or empty one answers at once, as before the parameter.
 //
 // A store that fails is 503 DATABASE_UNAVAILABLE, logged at ERROR and counted failed, which
 // agent-secrets reads as a failed read and waits through (retryable), where a 500 would end its
@@ -455,7 +457,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
 		return
 	case errors.Is(err, requests.ErrNotYours):
-		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
+		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
 		return
 	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
 		recorder.NoteCallerEnded()
@@ -489,25 +491,29 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	return time.Duration(seconds) * time.Second, true
 }
 
-// readHeld reads request id for enrollmentID. It reads the request's owner, state and whether the
-// model judge holds it (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when
-// the owner is another enrollment; while the state is pending and deadline has not passed, it
-// reads them again every requestWaitStep; then it reads the whole request (Machine.Get) once. A
-// request the judge held at the first read and holds no more has been handed to its person, still
-// pending: that ends the hold too, so the caller learns at once who decides it now and where. A
-// deadline already passed is the one read. The owner is checked at every step, so a request that
-// moves to another enrollment while the read is held (adopt moves a predecessor's requests to its
-// successor) is refused at the next step, as a new read of it is. Any other error is the store's,
-// or ctx's when ctx ended first.
+// readHeld reads request id for enrollmentID. It reads the caller's owner once
+// (Machine.EnrollmentOwner), then the request's owner, state and whether the model judge holds it
+// (Machine.OwnerAndState, one statement), refusing requests.ErrNotOwner when the request's owner is
+// not the caller's; while the state is pending and deadline has not passed, it reads them again
+// every requestWaitStep; then it reads the whole request (Machine.Get) once. A request the judge
+// held at the first read and holds no more has been handed to its person, still pending: that ends
+// the hold too, so the caller learns at once who decides it now and where. A deadline already
+// passed is the one read. The owner is checked at every step, so a request that moves to an
+// enrollment of another owner while the read is held is refused at the next step, as a new read of
+// it is. Any other error is the store's, or ctx's when ctx ended first.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
+	caller, err := s.deps.Machine.EnrollmentOwner(ctx, enrollmentID)
+	if err != nil {
+		return requests.Request{}, fmt.Errorf("read the caller's owner: %v", err)
+	}
 	first, heldByJudge := true, false
 	for {
 		owner, state, judging, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
 			return requests.Request{}, err
 		}
-		if owner != enrollmentID {
-			return requests.Request{}, requests.ErrNotYours
+		if owner != caller {
+			return requests.Request{}, requests.ErrNotOwner
 		}
 		if first {
 			first, heldByJudge = false, judging
